@@ -23,6 +23,7 @@ import {
   makeAntigravityStdoutTransform,
 } from "../antigravityAuthSupport.ts";
 import * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
+import { acpProviderOptionDescriptors } from "@t3tools/provider-acp/server/sessionConfig";
 import {
   acpPermissionDisposition,
   unknownRecord,
@@ -249,6 +250,67 @@ export function antigravityThinkingConfig(
 ) {
   const option = configOptions?.find((candidate) => candidate.category === "thought_level");
   return option?.type === "select" ? option : undefined;
+}
+
+export function isAntigravityOrchestratorModel(modelId: string | null | undefined): boolean {
+  if (!modelId) return false;
+  return /^gemini-pro-orchestrator-/i.test(modelId) || /\borchestrator\b/i.test(modelId);
+}
+
+export interface AntigravityOrchestratorCapabilities {
+  readonly isOrchestratorActive: boolean;
+  readonly currentModelId: string | null;
+  readonly hasThoughtLevel: boolean;
+  readonly dualRoleOptionIds: ReadonlyArray<string>;
+}
+
+const DUAL_ROLE_OPTION_PATTERN =
+  /^(?:planner|executor)[_-]?(?:model|thought[_-]?level|thinking|effort)/i;
+
+/**
+ * Inspects real `agy acp` `configOptions` for native Orchestrator presets and any
+ * agent-advertised dual-role (Planner/Executor) options without fabricating unsupported controls.
+ */
+export function detectAntigravityOrchestratorCapabilities(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+): AntigravityOrchestratorCapabilities {
+  const modelOption = configOptions?.find(
+    (candidate) => candidate.id === "model" || candidate.category === "model",
+  );
+  const currentModelId = modelOption?.type === "select" ? modelOption.currentValue : null;
+  const hasThoughtLevel = antigravityThinkingConfig(configOptions) !== undefined;
+  const dualRoleOptionIds = (configOptions ?? [])
+    .filter(
+      (candidate) =>
+        candidate.category !== "model" &&
+        candidate.category !== "mode" &&
+        candidate.category !== "collaboration_mode" &&
+        DUAL_ROLE_OPTION_PATTERN.test(candidate.id),
+    )
+    .map((candidate) => candidate.id);
+  return {
+    isOrchestratorActive: isAntigravityOrchestratorModel(currentModelId),
+    currentModelId,
+    hasThoughtLevel,
+    dualRoleOptionIds,
+  };
+}
+
+/**
+ * Converts Antigravity `thought_level` and any non-mode session config options
+ * (including future Planner/Executor role options) into `ProviderOptionDescriptor`s.
+ */
+export function antigravityModelOptionDescriptors(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+) {
+  const relevant = (configOptions ?? []).filter(
+    (candidate) =>
+      candidate.category !== "model" &&
+      candidate.category !== "mode" &&
+      candidate.category !== "collaboration_mode",
+  );
+  if (relevant.length === 0) return [];
+  return acpProviderOptionDescriptors({ configOptions: relevant, modeState: undefined });
 }
 
 /**

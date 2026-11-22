@@ -42,7 +42,11 @@ import {
 } from "@t3tools/provider-core/server/snapshotProbe";
 import { resolveUsageLimitsAfterProbe } from "@t3tools/provider-core/server/usageLimits";
 
-import { antigravityThinkingConfig } from "./acp/AntigravityAcpSupport.ts";
+import {
+  antigravityModelOptionDescriptors,
+  antigravityThinkingConfig,
+  isAntigravityOrchestratorModel,
+} from "./acp/AntigravityAcpSupport.ts";
 
 const EMPTY_MODEL_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });
 const MAX_WORKSPACE_SNAPSHOTS = 32;
@@ -92,6 +96,7 @@ export function buildAntigravityModelsFromSession(
           })) ?? [])
         : [];
   const currentThinking = antigravityThinkingConfig(setup.configOptions);
+  const currentDescriptors = antigravityModelOptionDescriptors(setup.configOptions);
   const seen = new Set<string>();
   // The agent can list two IDs under one name; label the later ones so the picker tells them apart.
   const names = new Set<string>();
@@ -103,6 +108,14 @@ export function buildAntigravityModelsFromSession(
     names.add(baseName);
     const observed =
       entry.value === currentValue ? (currentThinking ?? null) : thinkingLevels.get(entry.value);
+    const capabilities =
+      entry.value === currentValue && currentDescriptors.length > 0
+        ? createModelCapabilities({ optionDescriptors: currentDescriptors })
+        : observed === undefined
+          ? isAntigravityOrchestratorModel(entry.value)
+            ? EMPTY_MODEL_CAPABILITIES
+            : thinkingCapabilities(currentThinking, false)
+          : thinkingCapabilities(observed, true);
     return [
       {
         slug: entry.value,
@@ -111,8 +124,7 @@ export function buildAntigravityModelsFromSession(
         ...(entry.value === currentValue
           ? { isDefault: true, aliases: [ANTIGRAVITY_DEFAULT_MODEL] }
           : {}),
-        // Levels differ per model; an unobserved model reports none so the registry keeps its cached ones.
-        capabilities: thinkingCapabilities(observed),
+        capabilities,
       },
     ];
   });
