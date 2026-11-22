@@ -2041,7 +2041,11 @@ it.effect(
         { entitlementsPath: "/tmp/entitlements.mac.plist" },
       );
       const mac = config.mac as Record<string, unknown>;
+      assert.equal(config.appId, "com.lingxifox.lingxit3");
       assert.equal(mac.hardenedRuntime, true);
+      assert.notEqual(mac.notarize, false);
+      assert.match(mac.sign as string, /scripts[\\/]sign-macos\.ts$/);
+      assert.deepStrictEqual(mac.target, ["dmg", "zip"]);
       assert.equal(mac.entitlements, "/tmp/entitlements.mac.plist");
       assert.equal(mac.entitlementsInherit, "/tmp/entitlements.mac.plist");
       assert.notProperty(mac, "provisioningProfile");

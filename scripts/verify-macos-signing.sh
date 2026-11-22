@@ -8,7 +8,8 @@ fi
 
 TARGET_PATH="$1"
 REQUIRE_NOTARIZED="${LINGXI_REQUIRE_NOTARIZED:-1}"
-EXPECTED_BUNDLE_ID="${LINGXI_EXPECTED_BUNDLE_ID:-dev.lingxifox.t3code}"
+REQUIRE_DMG_NOTARIZED="${LINGXI_REQUIRE_DMG_NOTARIZED:-0}"
+EXPECTED_BUNDLE_ID="${LINGXI_EXPECTED_BUNDLE_ID:-com.lingxifox.lingxit3}"
 
 if [[ ! -e "$TARGET_PATH" ]]; then
   echo "Target not found: $TARGET_PATH" >&2
@@ -27,7 +28,7 @@ APP_PATH=""
 if [[ "$TARGET_PATH" == *.dmg ]]; then
   echo "[verify-macos-signing] Verifying DMG container: $TARGET_PATH"
   codesign --verify --verbose=2 "$TARGET_PATH"
-  if [[ "$REQUIRE_NOTARIZED" == "1" ]]; then
+  if [[ "$REQUIRE_DMG_NOTARIZED" == "1" ]]; then
     xcrun stapler validate "$TARGET_PATH"
     spctl --assess --type open --context context:primary-signature --verbose=4 "$TARGET_PATH"
   fi
@@ -45,6 +46,19 @@ fi
 echo "[verify-macos-signing] Inspecting app bundle: $APP_PATH"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
+CODESIGN_INFO="$(codesign -dvv "$APP_PATH" 2>&1)"
+if ! grep -q "Authority=Developer ID Application:" <<<"$CODESIGN_INFO"; then
+  echo "App bundle is not signed with a Developer ID Application certificate:" >&2
+  echo "$CODESIGN_INFO" >&2
+  exit 1
+fi
+if ! grep -Eq 'flags=0x[0-9a-fA-F]+\([^)]*runtime[^)]*\)' <<<"$CODESIGN_INFO"; then
+  echo "App bundle does not have Hardened Runtime enabled:" >&2
+  echo "$CODESIGN_INFO" >&2
+  exit 1
+fi
+echo "[verify-macos-signing] Developer ID Application + Hardened Runtime OK"
+
 INFO_PLIST="$APP_PATH/Contents/Info.plist"
 BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INFO_PLIST")"
 if [[ "$BUNDLE_ID" != "$EXPECTED_BUNDLE_ID" ]]; then
@@ -59,8 +73,8 @@ if [[ ! -f "$APP_UPDATE_YML" ]]; then
   echo "Missing app-update.yml at $APP_UPDATE_YML" >&2
   exit 1
 fi
-if ! grep -q "owner: LingXiFox" "$APP_UPDATE_YML"; then
-  echo "app-update.yml does not point to LingXiFox:" >&2
+if ! grep -q "owner: LingXiFox" "$APP_UPDATE_YML" || ! grep -q "repo: t3code" "$APP_UPDATE_YML"; then
+  echo "app-update.yml does not point to LingXiFox/t3code:" >&2
   cat "$APP_UPDATE_YML" >&2
   exit 1
 fi
@@ -68,7 +82,6 @@ echo "[verify-macos-signing] app-update.yml OK"
 
 STAGED_PKG_JSON="$RESOURCES_DIR/app.asar.unpacked/package.json"
 if [[ ! -f "$STAGED_PKG_JSON" ]]; then
-  # electron-builder may keep package.json inside app.asar; check asar or unpacked if present
   echo "[verify-macos-signing] Checking app.asar for lingxiUnsignedMacBuild marker..."
   if grep -qa "lingxiUnsignedMacBuild" "$RESOURCES_DIR/app.asar"; then
     echo "Signed build must not contain lingxiUnsignedMacBuild=true" >&2

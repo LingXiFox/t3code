@@ -3,7 +3,12 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
-import { CLI_RELEASE_REPOSITORY, updateFeedFileName } from "../packages/shared/src/cliRelease.ts";
+import {
+  buildReleaseMetadataComment,
+  buildUpdateFeedManifest,
+} from "../packages/shared/src/cliRelease.ts";
+
+export { buildReleaseMetadataComment, buildUpdateFeedManifest };
 
 export type ReleaseClassification = "upstream-only" | "local-only" | "mixed" | "no-change";
 export type ReleaseChannel = "nightly" | "latest";
@@ -325,48 +330,11 @@ export function renderReleaseNotes(options: {
   return "自上一版 Nightly 以来无代码变更。";
 }
 
-export function buildReleaseMetadataComment(options: {
-  readonly version: string;
-  readonly channel: ReleaseChannel;
-  readonly databaseMigration: number;
-  readonly classification: ReleaseClassification;
-  readonly repository?: string;
-}): string {
-  const payload = {
-    version: options.version,
-    channel: options.channel,
-    databaseMigration: options.databaseMigration,
-    classification: options.classification,
-    repository: options.repository ?? CLI_RELEASE_REPOSITORY,
-  };
-  return `<!-- lingxi-t3-release-meta: ${JSON.stringify(payload)} -->`;
-}
-
-export function buildUpdateFeedManifest(options: {
-  readonly version: string;
-  readonly tag: string;
-  readonly channel: ReleaseChannel;
-  readonly databaseMigration: number;
-  readonly releasedAt?: string;
-  readonly repository?: string;
-}): Record<string, unknown> {
-  const repository = options.repository ?? CLI_RELEASE_REPOSITORY;
-  return {
-    version: options.version,
-    tag: options.tag,
-    channel: options.channel,
-    repository,
-    releaseUrl: `https://github.com/${repository}/releases/tag/${options.tag}`,
-    databaseMigration: options.databaseMigration,
-    releasedAt: options.releasedAt ?? new Date().toISOString(),
-  };
-}
-
 export function classifyRepositoryChanges(options: {
   readonly repoRoot: string;
   readonly headRef: string;
   readonly upstreamRef: string;
-  readonly baseTag?: string | null;
+  readonly baseTag?: string | null | undefined;
 }): ClassificationResult {
   const { repoRoot, headRef, upstreamRef } = options;
   const headSha = runGit(repoRoot, ["rev-parse", headRef]);
@@ -451,7 +419,7 @@ function main() {
         baseTag: sourceTag,
         baseVersion,
         databaseMigration,
-        releaseFeedFile: updateFeedFileName("latest"),
+        releaseFeedFile: "latest.json",
       };
       console.log(JSON.stringify(resolution, null, 2));
       return;
@@ -467,7 +435,7 @@ function main() {
       baseTag,
       baseVersion,
       databaseMigration,
-      releaseFeedFile: updateFeedFileName("nightly"),
+      releaseFeedFile: "nightly.json",
     };
     console.log(JSON.stringify(resolution, null, 2));
     return;
@@ -508,6 +476,7 @@ function main() {
         tag,
         channel,
         databaseMigration,
+        releasedAt: new Date().toISOString(),
       });
       NodeFS.mkdirSync(NodePath.dirname(args["feed-out"]), { recursive: true });
       NodeFS.writeFileSync(args["feed-out"], `${JSON.stringify(feed, null, 2)}\n`, "utf8");
