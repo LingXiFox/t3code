@@ -119,12 +119,18 @@ describe("lingxi-release-source", () => {
       releasedAt: "2026-11-22T06:00:00.000Z",
     });
     assert.deepStrictEqual(feed, {
+      tag_name: "v0.0.48-nightly.20261122.1",
+      draft: false,
+      prerelease: true,
       version: "0.0.48-nightly.20261122.1",
       tag: "v0.0.48-nightly.20261122.1",
       channel: "nightly",
       repository: "LingXiFox/t3code",
       releaseUrl: "https://github.com/LingXiFox/t3code/releases/tag/v0.0.48-nightly.20261122.1",
       databaseMigration: 42,
+      t3code: {
+        databaseMigration: 42,
+      },
       releasedAt: "2026-11-22T06:00:00.000Z",
     });
   });

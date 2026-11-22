@@ -1,0 +1,420 @@
+name: LingXi Build & Publish Desktop
+
+on:
+  workflow_call:
+    inputs:
+      commit_sha:
+        description: Pinned verified commit SHA to build across all platforms
+        required: true
+        type: string
+      version:
+        description: Release version (without leading v)
+        required: true
+        type: string
+      tag:
+        description: Release git tag (e.g. v0.1.11-nightly.20261122.1 or v0.1.11)
+        required: true
+        type: string
+      channel:
+        description: Release channel (nightly or latest)
+        required: true
+        type: string
+      prerelease:
+        description: Whether the GitHub Release is a prerelease
+        required: true
+        type: boolean
+      make_latest:
+        description: GitHub Release make_latest flag ("true" or "false")
+        required: true
+        type: string
+      meta_artifact_name:
+        description: Artifact name containing release-notes.md and feed json
+        required: true
+        type: string
+      feed_file:
+        description: Feed JSON filename inside meta artifact (nightly.json or latest.json)
+        required: true
+        type: string
+    secrets:
+      CSC_LINK:
+        required: true
+      CSC_KEY_PASSWORD:
+        required: true
+      APPLE_API_KEY:
+        required: true
+      APPLE_API_KEY_ID:
+        required: true
+      APPLE_API_ISSUER:
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  VP_TELEMETRY_DISABLED: "1"
+
+jobs:
+  build-macos:
+    name: Build macOS (${{ matrix.arch }})
+    runs-on: macos-15
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - name: Checkout pinned commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.commit_sha }}
+
+      - name: Enforce Apple Developer ID & Notarization secrets
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          missing=()
+          [[ -z "$CSC_LINK" ]] && missing+=("CSC_LINK")
+          [[ -z "$CSC_KEY_PASSWORD" ]] && missing+=("CSC_KEY_PASSWORD")
+          [[ -z "$APPLE_API_KEY" ]] && missing+=("APPLE_API_KEY")
+          [[ -z "$APPLE_API_KEY_ID" ]] && missing+=("APPLE_API_KEY_ID")
+          [[ -z "$APPLE_API_ISSUER" ]] && missing+=("APPLE_API_ISSUER")
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::Missing required Apple signing/notarization secrets: ${missing[*]}. Refusing unsigned macOS build."
+            exit 1
+          fi
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+          cache: pnpm
+
+      - name: Install dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          echo "$GITHUB_WORKSPACE/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Ensure Rosetta for macOS x64 bytecode generation
+        if: matrix.arch == 'x64'
+        run: |
+          if [[ "$(uname -m)" == "arm64" ]] && ! /usr/bin/arch -x86_64 /usr/bin/true; then
+            sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
+          fi
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.arch == 'x64' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
+
+      - name: Prepare and validate Apple signing credentials
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/apple-keys"
+          KEY_FILE="$RUNNER_TEMP/apple-keys/AuthKey.p8"
+          (
+            umask 077
+            if grep -q "BEGIN PRIVATE KEY" <<<"$APPLE_API_KEY"; then
+              printf '%s\n' "$APPLE_API_KEY" > "$KEY_FILE"
+            else
+              printf '%s' "$APPLE_API_KEY" | base64 --decode > "$KEY_FILE"
+            fi
+          )
+          openssl pkey -in "$KEY_FILE" -noout
+          echo "APPLE_API_KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
+
+          if [[ "$CSC_LINK" != file://* && "$CSC_LINK" != https://* ]]; then
+            TMP_P12="$RUNNER_TEMP/apple-keys/cert-check.p12"
+            (
+              umask 077
+              printf '%s' "$CSC_LINK" | base64 --decode > "$TMP_P12"
+            )
+            rm -f "$TMP_P12"
+          fi
+
+      - name: Build, sign, and notarize macOS desktop artifacts
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ env.APPLE_API_KEY_FILE }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          T3CODE_DESKTOP_SIGN: "true"
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+        run: |
+          node scripts/build-desktop-artifact.ts \
+            --platform mac \
+            --arch "${{ matrix.arch }}" \
+            --build-version "${{ inputs.version }}" \
+            --output-dir dist-desktop \
+            --signed \
+            --verbose
+
+      - name: Collect release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release-publish
+          shopt -s nullglob
+          for pattern in "dist-desktop/*.dmg" "dist-desktop/*.zip" "dist-desktop/*.blockmap" "dist-desktop/*.yml"; do
+            for file in $pattern; do
+              [[ "$file" == */builder-debug.yml ]] && continue
+              cp "$file" release-publish/
+            done
+          done
+          if [[ "${{ matrix.arch }}" != "arm64" ]]; then
+            for manifest in release-publish/*-mac.yml; do
+              mv "$manifest" "${manifest%.yml}-${{ matrix.arch }}.yml"
+            done
+          fi
+
+      - name: Verify macOS code signature, Hardened Runtime, and notarization
+        run: |
+          DMG_PATH="$(find release-publish -maxdepth 1 -name '*.dmg' -print -quit)"
+          if [[ -z "$DMG_PATH" ]]; then
+            echo "::error::No .dmg artifact found in release-publish/"
+            exit 1
+          fi
+          LINGXI_REQUIRE_NOTARIZED=1 bash scripts/verify-macos-signing.sh "$DMG_PATH"
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: macos-${{ matrix.arch }}
+          path: release-publish/*
+          if-no-files-found: error
+          retention-days: 3
+
+  build-linux:
+    name: Build Linux (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout pinned commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.commit_sha }}
+
+      - name: Install Linux desktop build libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev pkg-config libgtk-3-0t64 libnss3 libasound2t64 libgbm1 imagemagick
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+          cache: pnpm
+
+      - name: Install dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          echo "$GITHUB_WORKSPACE/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.arch == 'x64' && 'x86_64-unknown-linux-gnu' || 'aarch64-unknown-linux-gnu' }}
+
+      - name: Build Linux desktop artifacts
+        env:
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+        run: |
+          node scripts/build-desktop-artifact.ts \
+            --platform linux \
+            --arch "${{ matrix.arch }}" \
+            --build-version "${{ inputs.version }}" \
+            --output-dir dist-desktop \
+            --verbose
+
+      - name: Collect release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release-publish
+          shopt -s nullglob
+          for pattern in "dist-desktop/*.AppImage" "dist-desktop/*.deb" "dist-desktop/*.blockmap" "dist-desktop/*.yml"; do
+            for file in $pattern; do
+              [[ "$file" == */builder-debug.yml ]] && continue
+              cp "$file" release-publish/
+            done
+          done
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: linux-${{ matrix.arch }}
+          path: release-publish/*
+          if-no-files-found: error
+          retention-days: 3
+
+  build-windows:
+    name: Build Windows (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+          - arch: arm64
+            runner: windows-11-arm
+    steps:
+      - name: Checkout pinned commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.commit_sha }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+          cache: pnpm
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          pnpm install --frozen-lockfile
+          echo "$GITHUB_WORKSPACE/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.arch == 'x64' && 'x86_64-pc-windows-msvc' || 'aarch64-pc-windows-msvc' }}
+
+      - name: Build Windows desktop artifacts
+        shell: bash
+        env:
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+        run: |
+          node scripts/build-desktop-artifact.ts \
+            --platform win \
+            --arch "${{ matrix.arch }}" \
+            --build-version "${{ inputs.version }}" \
+            --output-dir dist-desktop \
+            --verbose
+
+      - name: Collect release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-publish
+          shopt -s nullglob
+          for pattern in "dist-desktop/*.exe" "dist-desktop/*.blockmap" "dist-desktop/*.yml"; do
+            for file in $pattern; do
+              [[ "$file" == */builder-debug.yml ]] && continue
+              cp "$file" release-publish/
+            done
+          done
+          for manifest in release-publish/*.yml; do
+            mv "$manifest" "${manifest%.yml}-win-${{ matrix.arch }}.yml"
+          done
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: windows-${{ matrix.arch }}
+          path: release-publish/*
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    name: Publish LingXi Release
+    needs: [build-macos, build-linux, build-windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout pinned commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.commit_sha }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: release-artifacts
+
+      - name: Merge multi-arch update manifests and verify required assets
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          find release-artifacts -type f ! -path "release-artifacts/${{ inputs.meta_artifact_name }}/*" -exec cp {} release-assets/ \;
+          node scripts/merge-release-update-manifests.ts release-assets
+
+          shopt -s nullglob
+          dmgs=(release-assets/*.dmg)
+          zips=(release-assets/*.zip)
+          mac_ymls=(release-assets/*-mac.yml)
+          exes=(release-assets/*.exe)
+          appimages=(release-assets/*.AppImage)
+          if [[ ${#dmgs[@]} -lt 2 || ${#zips[@]} -lt 2 || ${#mac_ymls[@]} -lt 1 || ${#exes[@]} -lt 2 || ${#appimages[@]} -lt 2 ]]; then
+            echo "::error::Missing expected multi-arch release assets in release-assets/:"
+            ls -la release-assets
+            exit 1
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          target_commitish: ${{ inputs.commit_sha }}
+          name: LingXi T3 ${{ inputs.version }}
+          body_path: release-artifacts/${{ inputs.meta_artifact_name }}/release-notes.md
+          prerelease: ${{ inputs.prerelease }}
+          make_latest: ${{ inputs.make_latest }}
+          files: release-assets/*
+
+      - name: Publish update-feed manifest
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: update-feed
+          target_commitish: ${{ inputs.commit_sha }}
+          name: LingXi T3 Update Feed
+          prerelease: false
+          make_latest: "false"
+          files: release-artifacts/${{ inputs.meta_artifact_name }}/${{ inputs.feed_file }}
