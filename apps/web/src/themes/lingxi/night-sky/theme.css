@@ -49,11 +49,12 @@
 
 [data-slot="dialog-popup"][data-app-modal] {
   background:
-    linear-gradient(#0a0808d1 0 0),
+    linear-gradient(180deg, #090706eb, #070504f2),
     var(--lx-grid),
     var(--lx-sky) #000;
   background-attachment: fixed;
-  border-color: #fff6eb12;
+  border-color: #fff6eb1c;
+  backdrop-filter: blur(22px) saturate(1.1);
   image-rendering: pixelated;
 
   & > * {
@@ -174,12 +175,33 @@
 }
 
 [data-workspace-area="settings-nav"] {
-  background: #00000047;
-  border-color: #fff6eb0f;
+  background: #080605d9;
+  backdrop-filter: blur(18px) saturate(1.15);
+  border-color: #fff6eb16;
 
   & [data-slot="sidebar-menu-button"][data-active="true"] {
     background: linear-gradient(90deg, #f07c3847, #d968281a 60%, #d9682808);
     box-shadow: var(--lx-sheen-edge);
+  }
+}
+
+[data-app-modal] [data-settings-page-scroll] {
+  background: #080605a6;
+  backdrop-filter: blur(10px);
+}
+
+[data-app-modal] {
+  --muted-foreground: #cfc3b8;
+
+  &
+    :is(
+      [data-slot="input"],
+      [data-slot="textarea"],
+      [data-slot="select-trigger"],
+      [data-slot="combobox-input"]
+    ) {
+    background-color: #15100de8;
+    border-color: #fff6eb24;
   }
 }
 
@@ -233,6 +255,11 @@
   box-shadow:
     inset 0 1px 0 #fff6eb0f,
     0 24px 60px -20px #000000e6;
+}
+
+[data-metrics-status-bar] {
+  background: #0a0807cc;
+  border-top-color: #fff6eb14;
 }
 
 [data-app-modal] {
