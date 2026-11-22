@@ -68,6 +68,14 @@ jobs:
         with:
           ref: ${{ inputs.commit_sha }}
 
+      - name: Verify checked out SHA matches pinned commit
+        run: |
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          if [[ "$ACTUAL_SHA" != "${{ inputs.commit_sha }}" ]]; then
+            echo "::error::Checked out SHA ($ACTUAL_SHA) does not match pinned commit (${{ inputs.commit_sha }})."
+            exit 1
+          fi
+
       - name: Enforce Apple Developer ID & Notarization secrets
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -214,6 +222,14 @@ jobs:
         with:
           ref: ${{ inputs.commit_sha }}
 
+      - name: Verify checked out SHA matches pinned commit
+        run: |
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          if [[ "$ACTUAL_SHA" != "${{ inputs.commit_sha }}" ]]; then
+            echo "::error::Checked out SHA ($ACTUAL_SHA) does not match pinned commit (${{ inputs.commit_sha }})."
+            exit 1
+          fi
+
       - name: Install Linux desktop build libraries
         run: |
           sudo apt-get update
@@ -290,6 +306,15 @@ jobs:
         with:
           ref: ${{ inputs.commit_sha }}
 
+      - name: Verify checked out SHA matches pinned commit
+        shell: bash
+        run: |
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          if [[ "$ACTUAL_SHA" != "${{ inputs.commit_sha }}" ]]; then
+            echo "::error::Checked out SHA ($ACTUAL_SHA) does not match pinned commit (${{ inputs.commit_sha }})."
+            exit 1
+          fi
+
       - name: Install pnpm
         uses: pnpm/action-setup@v5
         with:
@@ -359,6 +384,15 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+
+      - name: Verify checked out SHA matches pinned commit
+        run: |
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          if [[ "$ACTUAL_SHA" != "${{ inputs.commit_sha }}" ]]; then
+            echo "::error::Checked out SHA ($ACTUAL_SHA) does not match pinned commit (${{ inputs.commit_sha }})."
+            exit 1
+          fi
 
       - name: Install pnpm
         uses: pnpm/action-setup@v5
@@ -395,6 +429,20 @@ jobs:
           if [[ ${#dmgs[@]} -lt 2 || ${#zips[@]} -lt 2 || ${#mac_ymls[@]} -lt 1 || ${#exes[@]} -lt 2 || ${#appimages[@]} -lt 2 ]]; then
             echo "::error::Missing expected multi-arch release assets in release-assets/:"
             ls -la release-assets
+            exit 1
+          fi
+
+      - name: Re-verify pinned commit on trusted branch before publishing
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/lingxifox:refs/remotes/origin/lingxifox
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          if [[ "$ACTUAL_SHA" != "${{ inputs.commit_sha }}" ]]; then
+            echo "::error::HEAD ($ACTUAL_SHA) does not match pinned commit (${{ inputs.commit_sha }})."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${{ inputs.commit_sha }}" origin/lingxifox; then
+            echo "::error::Pinned commit ${{ inputs.commit_sha }} is not an ancestor of origin/lingxifox."
             exit 1
           fi
 

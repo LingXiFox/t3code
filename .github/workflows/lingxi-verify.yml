@@ -74,7 +74,8 @@ jobs:
             apps/web/src/components/desktopUpdate.logic.test.ts \
             apps/web/src/components/settings/updateTrackSwitch.logic.test.ts \
             scripts/lingxi-release-source.test.ts \
-            scripts/build-desktop-artifact.test.ts
+            scripts/build-desktop-artifact.test.ts \
+            scripts/verify-macos-asar-manifest.test.ts
 
       - name: Check shell script syntax
         run: bash -n scripts/verify-macos-signing.sh
