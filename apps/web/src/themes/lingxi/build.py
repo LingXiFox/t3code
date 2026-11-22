@@ -11,7 +11,7 @@ NIGHT_SKY_DIR = ROOT / "night-sky"
 GENERATED_DIR = ROOT / "generated"
 
 sys.path.insert(0, str(NIGHT_SKY_DIR))
-from art import Sky, build_art_data_url  # noqa: E402
+from art import Sky, build_art_data_url, build_fox_data_url  # noqa: E402
 
 CSS_LIMIT = 20_000
 
@@ -31,7 +31,7 @@ LINGXI_NIGHT_SKY = ThemeSpec(
     const_prefix="LINGXI_NIGHT_SKY",
     name="LingXi Night Sky",
     sources=("theme.css", "plus.css"),
-    sky=Sky(336, 189, seed=8, speckles=False),
+    sky=Sky(324, 182, seed=8, speckles=False),
     plus_pressed=",[data-model-picker-sidebar] [aria-pressed=true]",
 )
 
@@ -147,18 +147,22 @@ def minify(css: str) -> str:
 
 
 def build_theme_payload(theme: ThemeSpec) -> dict[str, object]:
+    fox_url = build_fox_data_url()
     css = minify("\n".join((NIGHT_SKY_DIR / source).read_text(encoding="utf-8") for source in theme.sources))
     css = (
         css.replace("__PLUS_PRESSED__", theme.plus_pressed)
         .replace("__ART_WIDTH__", str(theme.sky.width))
         .replace("__ART__", build_art_data_url(theme.sky))
+        .replace("__FOX__", fox_url)
     )
     if len(css) > CSS_LIMIT:
         sys.exit(f"{theme.id} css is {len(css)} characters; limit is {CSS_LIMIT}")
     if 'content:"T3"' in css or "content:'T3'" in css:
         sys.exit(f"{theme.id} css still contains upstream T3 watermark")
-    if 'content:"LINGXIFOX"' not in css:
-        sys.exit(f"{theme.id} css is missing LINGXIFOX watermark")
+    if 'content:"LINGXIFOX"' in css or "content:'LINGXIFOX'" in css:
+        sys.exit(f"{theme.id} css still contains LINGXIFOX text watermark")
+    if fox_url not in css:
+        sys.exit(f"{theme.id} css is missing pixel fox watermark")
     return {
         "id": theme.id,
         "label": theme.name,
