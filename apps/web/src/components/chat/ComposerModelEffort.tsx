@@ -291,7 +291,13 @@ function EffortLevels(props: { traits: TraitsSelectionInput }) {
       </>
     );
   }
-  if (!effort && others.length === 0) return <NoEffortRow />;
+  if (!effort && others.length === 0) {
+    const isAntigravityOrchestrator =
+      props.traits.provider === "antigravity" &&
+      typeof props.traits.model === "string" &&
+      /orchestrator/i.test(props.traits.model);
+    return isAntigravityOrchestrator ? <OrchestratorManagedRow /> : <NoEffortRow />;
+  }
   // Ultrathink in the prompt locks the levels; the first option then holds the tab stop.
   const locked =
     effort?.descriptor.id === traits.primarySelectDescriptor?.id && traits.ultrathinkInBodyText;
@@ -530,6 +536,30 @@ function NoEffortRow() {
   return (
     <div className="flex h-8 items-center px-2 text-muted-foreground text-sm">
       <T>No effort levels</T>
+    </div>
+  );
+}
+
+function OrchestratorManagedRow() {
+  return (
+    <div
+      data-orchestrator-managed-notice
+      className="flex flex-col gap-1 rounded-md border border-border/60 bg-muted/30 px-2.5 py-2 text-xs"
+    >
+      <div className="flex items-center justify-between gap-2 font-medium text-foreground">
+        <span>
+          <T>Orchestrator mode</T>
+        </span>
+        <span className="rounded-xs bg-primary/15 px-1.5 py-0.5 text-2xs text-primary">
+          <T>Managed by Antigravity</T>
+        </span>
+      </div>
+      <p className="text-muted-foreground leading-relaxed">
+        <T>
+          Planner &amp; executor models and thinking depth are managed by this Antigravity preset.
+          Independent role controls appear automatically when advertised by the runtime.
+        </T>
+      </p>
     </div>
   );
 }

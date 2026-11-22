@@ -146,3 +146,68 @@ it("focuses a reasoning level by its first letter without selecting it", async (
     .element(screen.getByRole("radio", { name: "High" }))
     .toHaveAttribute("aria-checked", "true");
 });
+
+it("shows Managed by Antigravity notice for Orchestrator presets without thought_level and renders dual-role options when advertised", async () => {
+  const orchestratorModels: ReadonlyArray<ServerProviderModel> = [
+    {
+      slug: "gemini-pro-orchestrator-neon",
+      name: "Orchestrator (Neon)",
+      isCustom: false,
+      capabilities: createModelCapabilities({ optionDescriptors: [] }),
+    },
+  ];
+  await using managedScreen = await render(
+    <div data-model-picker-effort>
+      <ComposerEffortColumn
+        traits={{
+          provider: ProviderDriverKind.make("antigravity"),
+          instanceId: ProviderInstanceId.make("antigravity"),
+          models: orchestratorModels,
+          model: "gemini-pro-orchestrator-neon",
+          modelOptions: [],
+          onModelOptionsChange: () => {},
+        }}
+      />
+    </div>,
+    { router: false }, // no routes involved
+  );
+  await expect.element(managedScreen.getByText("Orchestrator mode")).toBeInTheDocument();
+  await expect.element(managedScreen.getByText("Managed by Antigravity")).toBeInTheDocument();
+
+  const futureDualRoleModels: ReadonlyArray<ServerProviderModel> = [
+    {
+      slug: "gemini-pro-orchestrator-neon",
+      name: "Orchestrator (Neon)",
+      isCustom: false,
+      capabilities: createModelCapabilities({
+        optionDescriptors: [
+          {
+            id: "planner_model",
+            label: "Planner model",
+            type: "select",
+            currentValue: "gemini-4-neon",
+            options: [{ id: "gemini-4-neon", label: "Gemini 4 Neon" }],
+          },
+        ],
+      }),
+    },
+  ];
+  await using dualRoleScreen = await render(
+    <div data-model-picker-effort>
+      <ComposerEffortColumn
+        traits={{
+          provider: ProviderDriverKind.make("antigravity"),
+          instanceId: ProviderInstanceId.make("antigravity"),
+          models: futureDualRoleModels,
+          model: "gemini-pro-orchestrator-neon",
+          modelOptions: [],
+          onModelOptionsChange: () => {},
+        }}
+      />
+    </div>,
+    { router: false }, // no routes involved
+  );
+  await expect
+    .element(dualRoleScreen.getByRole("button", { name: "Planner model: Gemini 4 Neon" }))
+    .toBeInTheDocument();
+});
