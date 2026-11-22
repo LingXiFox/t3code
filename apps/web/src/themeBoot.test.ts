@@ -2,21 +2,22 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import indexHtml from "../index.html?raw";
 import {
+  ALL_BUILT_IN_THEMES,
   CUSTOM_THEMES_STORAGE_KEY,
   ENVIRONMENT_THEMES_STORAGE_KEY,
   getDefaultThemeColors,
   getThemeColorsForMode,
+  getThemeModes,
   invalidateCustomThemes,
   isKnownThemePreference,
+  LINGXI_NIGHT_SKY_THEME,
   publishedThemeDefinitions,
   resolveThemeAppearance,
   T3_CHAT_THEME,
-  EMBER_THEME,
   GROVE_THEME,
-  IRIS_THEME,
-  OCEAN_THEME,
   THEME_APPEARANCE_MODE_STORAGE_KEY,
   THEME_FOLLOW_SYSTEM_STORAGE_KEY,
+  THEME_HALVES_STORAGE_KEY,
   toCanonicalThemeColor,
 } from "./themePalette";
 
@@ -112,7 +113,16 @@ function runtimeResolvedAppearance(
   invalidateCustomThemes();
   try {
     const raw = storage[THEME_STORAGE_KEY] ?? null;
-    const theme = raw !== null && isKnownThemePreference(raw) ? raw : "system";
+    const hasAnyStoredPreference =
+      raw !== null ||
+      storage[THEME_FOLLOW_SYSTEM_STORAGE_KEY] !== undefined ||
+      storage[THEME_APPEARANCE_MODE_STORAGE_KEY] !== undefined ||
+      storage[THEME_HALVES_STORAGE_KEY] !== undefined;
+    const theme = !hasAnyStoredPreference
+      ? LINGXI_NIGHT_SKY_THEME.id
+      : raw !== null && isKnownThemePreference(raw)
+        ? raw
+        : "system";
     const followRaw = storage[THEME_FOLLOW_SYSTEM_STORAGE_KEY] ?? null;
     const appearanceRaw = storage[THEME_APPEARANCE_MODE_STORAGE_KEY] ?? null;
     const appearanceMode =
@@ -153,7 +163,29 @@ describe("index.html boot script", () => {
     storage: Record<string, string>;
     prefersDark: boolean;
   }> = [
-    { name: "no stored preference on a dark OS", storage: {}, prefersDark: true },
+    {
+      name: "no stored preference on a dark OS (defaults to LingXi Night Sky)",
+      storage: {},
+      prefersDark: true,
+    },
+    {
+      name: "no stored preference on a light OS (defaults to LingXi Night Sky dark)",
+      storage: {},
+      prefersDark: false,
+    },
+    {
+      name: "explicit system preference on a light OS stays light",
+      storage: { [THEME_STORAGE_KEY]: "system" },
+      prefersDark: false,
+    },
+    {
+      name: "LingXi Night Sky stays dark on a light OS",
+      storage: {
+        [THEME_STORAGE_KEY]: "lingxi-night-sky",
+        [THEME_FOLLOW_SYSTEM_STORAGE_KEY]: "true",
+      },
+      prefersDark: false,
+    },
     {
       name: "T3 Chat follows a dark OS",
       storage: { [THEME_STORAGE_KEY]: "t3-chat", [THEME_FOLLOW_SYSTEM_STORAGE_KEY]: "true" },
@@ -310,9 +342,8 @@ describe("index.html boot script", () => {
   });
 
   it("keeps every built-in boot splash in sync with the real palettes", () => {
-    for (const theme of [T3_CHAT_THEME, GROVE_THEME, OCEAN_THEME, EMBER_THEME, IRIS_THEME]) {
-      expect(theme.appearance).toBe("light");
-      for (const mode of ["light", "dark"] as const) {
+    for (const theme of ALL_BUILT_IN_THEMES) {
+      for (const mode of getThemeModes(theme)) {
         const colors = getThemeColorsForMode(theme, mode);
         expect(colors).not.toBeNull();
         const boot = runBootScript({

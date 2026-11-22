@@ -11,6 +11,7 @@ import {
   isKnownThemePreference,
   getThemePreferenceMode,
   getThemePreviewAppearance,
+  LINGXI_DEFAULT_THEME_ID,
   parseThemeHalves,
   resolveDesktopTheme,
   resolveThemeAppearance,
@@ -184,6 +185,23 @@ function writeAppearanceModePreference(appearanceMode: ThemePreferenceMode): voi
   }
 }
 
+function hasStoredThemePreferences(): boolean {
+  if (typeof window === "undefined") return false;
+  for (const key of [
+    STORAGE_KEY,
+    THEME_APPEARANCE_MODE_STORAGE_KEY,
+    THEME_FOLLOW_SYSTEM_STORAGE_KEY,
+    THEME_HALVES_STORAGE_KEY,
+  ]) {
+    try {
+      if (window.localStorage.getItem(key) !== null) return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 export function readThemePreference(): Theme {
   if (typeof window === "undefined") return DEFAULT_THEME_SNAPSHOT.theme;
   let raw: string | null;
@@ -198,6 +216,9 @@ export function readThemePreference(): Theme {
   }
   if (raw !== null && isKnownThemePreference(raw)) {
     return canonicalThemePreference(raw);
+  }
+  if (raw === null && !hasStoredThemePreferences()) {
+    return LINGXI_DEFAULT_THEME_ID;
   }
   return DEFAULT_THEME_SNAPSHOT.theme;
 }

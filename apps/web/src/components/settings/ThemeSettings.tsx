@@ -14,6 +14,7 @@ import { useEnvironmentThemeDefinitions } from "../../hooks/useEnvironmentTheme"
 import { readThemeHalvesRaw } from "../../hooks/useTheme";
 import { cn } from "../../lib/utils";
 import {
+  ALL_BUILT_IN_THEMES,
   getThemeDefinition,
   singleAppearanceOf,
   getThemeModes,
@@ -22,11 +23,6 @@ import {
   type ThemeAppearance,
   type ThemeDefinition,
   type ThemeHalves,
-  T3_CHAT_THEME,
-  EMBER_THEME,
-  GROVE_THEME,
-  IRIS_THEME,
-  OCEAN_THEME,
 } from "../../themePalette";
 import {
   AlertDialog,
@@ -55,13 +51,7 @@ import {
 import { ThemeWireframe } from "./ThemeWireframe";
 import { T, useGT } from "gt-react";
 
-const MAINTAINER_THEMES: ReadonlyArray<ThemeDefinition> = [
-  T3_CHAT_THEME,
-  GROVE_THEME,
-  OCEAN_THEME,
-  EMBER_THEME,
-  IRIS_THEME,
-];
+const MAINTAINER_THEMES: ReadonlyArray<ThemeDefinition> = ALL_BUILT_IN_THEMES;
 
 function collectionVariantLabels(themes: ReadonlyArray<ThemeDefinition>): ReadonlyArray<string> {
   if (themes.length === 0) return [];
@@ -816,6 +806,9 @@ export function ThemeLibrary({
               activeModes={pickedModesFor(maintainerTheme.id)}
               isActive={false}
               key={maintainerTheme.id}
+              onDownload={() =>
+                downloadThemeFile(`${maintainerTheme.id}.json`, serializeThemeFile(maintainerTheme))
+              }
               onDuplicate={() =>
                 openThemeEditor({
                   editingThemeId: null,
