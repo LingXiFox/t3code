@@ -68,12 +68,9 @@ export function UpdateTrackSwitchDialog({
             {AsyncResult.isFailure(release)
               ? npmReleaseFailureMessage(release.cause, m)
               : AsyncResult.isSuccess(release)
-                ? gt(
-                    "Could not find the latest {label} release in this environment's npm registry.",
-                    {
-                      label,
-                    },
-                  )
+                ? gt("Could not find a published {label} release for LingXi T3 yet.", {
+                    label,
+                  })
                 : gt("Checking releases…")}
           </AlertDialogDescription>
         </AlertDialogHeader>
@@ -214,7 +211,7 @@ function SwitchPlan({
           ? [gt("This app's updates are off here, so reinstall it yourself to switch.")]
           : []),
         ...(switchesLocal && isMacPlatform(navigator.platform)
-          ? [gt("If T3 Code does not reopen after it restarts, open it again.")]
+          ? [gt("If LingXi T3 does not reopen after it restarts, open it again.")]
           : []),
       ]}
       restarts={everything.restarts}
