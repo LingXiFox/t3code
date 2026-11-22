@@ -1,0 +1,121 @@
+name: LingXi Verify
+
+on:
+  push:
+    branches:
+      - lingxifox
+  pull_request:
+    branches:
+      - lingxifox
+  workflow_dispatch:
+    inputs:
+      build_macos_arm64:
+        description: "Run unsigned macOS arm64 desktop artifact build verification (no release)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lingxi-verify-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Typecheck and Fork Verification Tests
+    if: github.repository == 'LingXiFox/t3code'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck affected packages
+        run: |
+          pnpm exec vp run --filter @t3tools/shared --filter @t3tools/desktop --filter @t3tools/web typecheck
+
+      - name: Verify fork identity and release sources
+        run: |
+          pnpm exec vp test run \
+            packages/shared/src/cliRelease.test.ts \
+            apps/web/src/components/desktopUpdate.logic.test.ts \
+            apps/desktop/src/app/DesktopAppIdentity.test.ts \
+            apps/desktop/src/app/DesktopUserData.test.ts \
+            apps/desktop/src/app/DesktopEnvironment.test.ts \
+            apps/desktop/src/app/DesktopEarlyElectronStartup.test.ts \
+            apps/desktop/src/electron/ElectronProtocol.test.ts \
+            apps/desktop/src/updates/DesktopUpdates.test.ts \
+            apps/desktop/src/updates/githubUpdateFeed.test.ts \
+            scripts/build-desktop-artifact.test.ts \
+            scripts/install.test.ts
+
+  build_macos_arm64:
+    name: Build macOS arm64 Desktop Artifact (Unsigned)
+    if: github.repository == 'LingXiFox/t3code' && github.event_name == 'workflow_dispatch' && inputs.build_macos_arm64 == true
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: pnpm
+
+      - name: Ensure Rust arm64 target
+        run: rustup target add aarch64-apple-darwin
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build desktop bundles
+        run: pnpm exec vp run build:desktop
+
+      - name: Build unsigned macOS arm64 DMG artifact
+        env:
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: LingXiFox/t3code
+        run: |
+          pnpm exec node scripts/build-desktop-artifact.ts \
+            --platform mac \
+            --target dmg \
+            --arch arm64 \
+            --skip-build \
+            --output-dir release-verify
+
+      - name: Verify generated update manifest and app identity
+        run: |
+          test -f release-verify/latest-mac.yml
+          grep -q "LingXi-T3-" release-verify/latest-mac.yml
+          mkdir -p "$RUNNER_TEMP/lingxi-app-check"
+          ditto -xk release-verify/LingXi-T3-*-arm64.zip "$RUNNER_TEMP/lingxi-app-check"
+          plutil -p "$RUNNER_TEMP/lingxi-app-check/LingXi T3.app/Contents/Info.plist" | grep -q "com.lingxifox.lingxit3"
+          grep -q "owner: LingXiFox" "$RUNNER_TEMP/lingxi-app-check/LingXi T3.app/Contents/Resources/app-update.yml"
+          grep -q "repo: t3code" "$RUNNER_TEMP/lingxi-app-check/LingXi T3.app/Contents/Resources/app-update.yml"
+
+      - name: Upload build verification artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lingxi-t3-macos-arm64-verify
+          path: |
+            release-verify/*.dmg
+            release-verify/*.zip
+            release-verify/latest-mac.yml
+          retention-days: 7
