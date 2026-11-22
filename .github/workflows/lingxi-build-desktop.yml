@@ -226,6 +226,19 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+      - name: Write macOS failure summary
+        if: failure()
+        run: |
+          {
+            echo "### macOS Build / Signing Gate Failed (${{ matrix.arch }})"
+            echo ""
+            echo "- **Stage**: \`build-macos (${{ matrix.arch }})\`"
+            echo "- **Pinned Commit SHA**: \`${{ inputs.commit_sha }}\`"
+            echo "- **Tag**: \`${{ inputs.tag }}\`"
+            echo "- **Action**: Release publishing is blocked so unsigned or unnotarized macOS artifacts are never shipped."
+            echo "- **Recovery**: Inspect the failed step above, fix on \`lingxifox\`, verify \`LingXi Verify\`, and re-run release."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build-linux:
     name: Build Linux (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
@@ -401,6 +414,9 @@ jobs:
     needs: [build-macos, build-linux, build-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    concurrency:
+      group: lingxi-release-publish
+      cancel-in-progress: false
     steps:
       - name: Checkout pinned commit
         uses: actions/checkout@v6
@@ -445,19 +461,55 @@ jobs:
           shopt -s nullglob
           dmgs=(release-assets/*.dmg)
           zips=(release-assets/*.zip)
-          mac_ymls=(release-assets/*-mac.yml)
+          mac_ymls=(release-assets/${{ inputs.channel }}-mac.yml)
+          win_ymls=(release-assets/${{ inputs.channel }}.yml)
+          linux_x64_ymls=(release-assets/${{ inputs.channel }}-linux.yml)
+          linux_arm64_ymls=(release-assets/${{ inputs.channel }}-linux-arm64.yml)
           exes=(release-assets/*.exe)
           appimages=(release-assets/*.AppImage)
-          if [[ ${#dmgs[@]} -lt 2 || ${#zips[@]} -lt 2 || ${#mac_ymls[@]} -lt 1 || ${#exes[@]} -lt 2 || ${#appimages[@]} -lt 2 ]]; then
-            echo "::error::Missing expected multi-arch release assets in release-assets/:"
+          if [[ ${#dmgs[@]} -lt 2 || ${#zips[@]} -lt 2 || ${#mac_ymls[@]} -ne 1 || ${#win_ymls[@]} -ne 1 || ${#linux_x64_ymls[@]} -ne 1 || ${#linux_arm64_ymls[@]} -ne 1 || ${#exes[@]} -lt 2 || ${#appimages[@]} -lt 2 ]]; then
+            echo "::error::Missing expected multi-arch release assets or update manifests in release-assets/:"
             ls -la release-assets
             exit 1
           fi
 
-      - name: Re-verify pinned commit on trusted branch before publishing
+          node -e '
+            const fs = require("node:fs");
+            const expectedVersion = process.argv[1];
+            const expectedTag = process.argv[2];
+            const feedPath = process.argv[3];
+            const ymlFiles = process.argv.slice(4);
+            for (const file of ymlFiles) {
+              const content = fs.readFileSync(file, "utf8").trim();
+              if (!content) {
+                throw new Error(`Empty update manifest: ${file}`);
+              }
+              const escaped = expectedVersion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              if (!new RegExp(`^version:\\s*[\x27"]?${escaped}[\x27"]?\\s*$`, "m").test(content)) {
+                throw new Error(`Manifest ${file} does not declare expected version ${expectedVersion}`);
+              }
+            }
+            const feed = JSON.parse(fs.readFileSync(feedPath, "utf8"));
+            if (feed.tag_name !== expectedTag || feed.version !== expectedVersion || feed.repository !== "LingXiFox/t3code") {
+              throw new Error(`Invalid feed manifest ${feedPath}: ${JSON.stringify(feed)}`);
+            }
+            if (!Number.isInteger(feed?.t3code?.databaseMigration) || feed.t3code.databaseMigration <= 0) {
+              throw new Error(`Invalid databaseMigration in ${feedPath}`);
+            }
+          ' \
+            "${{ inputs.version }}" \
+            "${{ inputs.tag }}" \
+            "release-artifacts/${{ inputs.meta_artifact_name }}/${{ inputs.feed_file }}" \
+            "release-assets/${{ inputs.channel }}-mac.yml" \
+            "release-assets/${{ inputs.channel }}.yml" \
+            "release-assets/${{ inputs.channel }}-linux.yml" \
+            "release-assets/${{ inputs.channel }}-linux-arm64.yml"
+
+      - name: Re-verify pinned commit and tag uniqueness before publishing
         run: |
           set -euo pipefail
           git fetch --no-tags origin +refs/heads/lingxifox:refs/remotes/origin/lingxifox
+          git fetch origin --tags --prune
           ACTUAL_SHA="$(git rev-parse HEAD)"
           if [[ "$ACTUAL_SHA" != "${{ inputs.commit_sha }}" ]]; then
             echo "::error::HEAD ($ACTUAL_SHA) does not match pinned commit (${{ inputs.commit_sha }})."
@@ -465,6 +517,17 @@ jobs:
           fi
           if ! git merge-base --is-ancestor "${{ inputs.commit_sha }}" origin/lingxifox; then
             echo "::error::Pinned commit ${{ inputs.commit_sha }} is not an ancestor of origin/lingxifox."
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/${{ inputs.tag }}" >/dev/null; then
+            echo "::error::Release tag ${{ inputs.tag }} already exists. Refusing to overwrite existing release."
+            {
+              echo "### Duplicate Tag Blocked"
+              echo ""
+              echo "- **Tag**: \`${{ inputs.tag }}\`"
+              echo "- **Commit SHA**: \`${{ inputs.commit_sha }}\`"
+              echo "- **Action**: Existing tag and update-feed remain untouched."
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
@@ -488,3 +551,18 @@ jobs:
           prerelease: false
           make_latest: "false"
           files: release-artifacts/${{ inputs.meta_artifact_name }}/${{ inputs.feed_file }}
+
+      - name: Write release summary
+        if: always()
+        run: |
+          {
+            echo "### LingXi Desktop Release Publish (${{ inputs.channel }})"
+            echo ""
+            echo "- **Version**: \`${{ inputs.version }}\`"
+            echo "- **Tag**: \`${{ inputs.tag }}\`"
+            echo "- **Pinned Commit SHA**: \`${{ inputs.commit_sha }}\`"
+            echo "- **Job Status**: \`${{ job.status }}\`"
+            if [[ "${{ job.status }}" != "success" ]]; then
+              echo "- **Recovery**: Previous GitHub Release and \`update-feed\` pointer were preserved unless publication partially completed; inspect failed step above."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

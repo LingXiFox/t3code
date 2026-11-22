@@ -62,14 +62,30 @@ jobs:
 
           if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
             echo "::error::Stable tag ${TAG} already exists."
+            {
+              echo "### Stable Release Blocked (Duplicate Tag)"
+              echo ""
+              echo "- **Tag**: \`${TAG}\`"
+              echo "- **Nightly Source**: \`${{ inputs.nightly_tag }}\`"
+              echo "- **Commit SHA**: \`${COMMIT_SHA}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
-          PASSED_COUNT="$(gh run list --workflow lingxi-verify.yml --commit "$COMMIT_SHA" --limit 10 --json conclusion --jq 'map(select(.conclusion == "success")) | length')"
-          if [[ "$PASSED_COUNT" == "0" ]]; then
-            echo "::error::Commit $COMMIT_SHA does not have a passing LingXi Verify run."
+          VERIFY_PASSED="$(gh run list --workflow lingxi-verify.yml --commit "$COMMIT_SHA" --limit 10 --json conclusion --jq 'map(select(.conclusion == "success")) | length')"
+          SYNC_PASSED="$(gh run list --workflow lingxi-upstream-sync.yml --commit "$COMMIT_SHA" --limit 10 --json conclusion --jq 'map(select(.conclusion == "success")) | length')"
+          if [[ "$VERIFY_PASSED" == "0" && "$SYNC_PASSED" == "0" ]]; then
+            echo "::error::Commit $COMMIT_SHA does not have a passing LingXi Verify or LingXi Upstream Sync run."
             exit 1
           fi
+
+          {
+            echo "### Stable Promotion Plan"
+            echo ""
+            echo "- **Nightly Source**: \`${{ inputs.nightly_tag }}\`"
+            echo "- **Stable Version / Tag**: \`$VERSION\` / \`$TAG\`"
+            echo "- **Pinned Commit SHA**: \`$COMMIT_SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
           node scripts/lingxi-release-source.ts classify-and-notes \
             --channel latest \

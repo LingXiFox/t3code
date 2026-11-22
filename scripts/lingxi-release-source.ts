@@ -495,6 +495,9 @@ function main() {
         channel,
         databaseMigration,
         releasedAt: new Date().toISOString(),
+        name: `LingXi T3 ${version}`,
+        body: notesWithMeta,
+        commitSha: classification.headSha,
       });
       NodeFS.mkdirSync(NodePath.dirname(args["feed-out"]), { recursive: true });
       NodeFS.writeFileSync(args["feed-out"], `${JSON.stringify(feed, null, 2)}\n`, "utf8");
