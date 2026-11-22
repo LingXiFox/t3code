@@ -1,0 +1,105 @@
+name: LingXi Stable Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      nightly_tag:
+        description: Verified Nightly tag to promote (e.g. v0.0.48-nightly.20261122.1)
+        required: true
+        type: string
+
+concurrency:
+  group: lingxi-stable
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  VP_TELEMETRY_DISABLED: "1"
+
+jobs:
+  promote-stable:
+    name: Promote Nightly to Stable
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: lingxifox
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve stable version and release notes from nightly tag
+        id: resolve
+        run: |
+          git fetch origin main --tags --prune
+          VERSION_JSON="$(node scripts/lingxi-release-source.ts resolve-version --channel latest --nightly-tag "${{ inputs.nightly_tag }}")"
+          VERSION="$(node -e 'console.log(JSON.parse(process.argv[1]).version)' "$VERSION_JSON")"
+          TAG="$(node -e 'console.log(JSON.parse(process.argv[1]).tag)' "$VERSION_JSON")"
+          TARGET_SHA="$(git rev-list -n 1 "${{ inputs.nightly_tag }}")"
+
+          node scripts/lingxi-release-source.ts classify-and-notes \
+            --channel latest \
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --head-ref "$TARGET_SHA" \
+            --upstream-ref origin/main \
+            --notes-out release-notes.md \
+            --feed-out latest.json
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "target_sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Verify LingXi Verify passed on target commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CONCLUSION="$(gh run list --workflow lingxi-verify.yml --commit "${{ steps.resolve.outputs.target_sha }}" --limit 1 --json conclusion --jq '.[0].conclusion')"
+          if [[ "$CONCLUSION" != "success" ]]; then
+            echo "::error::Commit ${{ steps.resolve.outputs.target_sha }} does not have a passing LingXi Verify run (got: $CONCLUSION)."
+            exit 1
+          fi
+
+      - name: Download assets from Nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p release-assets
+          gh release download "${{ inputs.nightly_tag }}" --dir release-assets
+
+      - name: Publish GitHub Stable Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.resolve.outputs.tag }}
+          target_commitish: ${{ steps.resolve.outputs.target_sha }}
+          name: LingXi T3 ${{ steps.resolve.outputs.version }}
+          body_path: release-notes.md
+          prerelease: false
+          make_latest: "true"
+          files: release-assets/*
+
+      - name: Publish update-feed/latest.json manifest
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: update-feed
+          target_commitish: ${{ steps.resolve.outputs.target_sha }}
+          name: LingXi T3 Update Feed
+          prerelease: false
+          make_latest: "false"
+          files: latest.json
