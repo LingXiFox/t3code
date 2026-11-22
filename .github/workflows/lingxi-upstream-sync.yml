@@ -92,7 +92,7 @@ jobs:
           set -euo pipefail
           BEHIND_COUNT="$(git rev-list --count origin/lingxifox..upstream/main)"
           UPSTREAM_SHA="${{ steps.mirror_main.outputs.upstream_sha }}"
-          ORIGIN_MAIN_BEFORE_SHA="${{ steps.mirror_main.outputs.origin_main_before_sha }}"
+          BASE_SHA="$(git merge-base origin/lingxifox upstream/main)"
           LINGXIFOX_BEFORE_SHA="$(git rev-parse origin/lingxifox)"
           echo "behind_count=$BEHIND_COUNT" >> "$GITHUB_OUTPUT"
           echo "lingxifox_before_sha=$LINGXIFOX_BEFORE_SHA" >> "$GITHUB_OUTPUT"
@@ -146,7 +146,7 @@ jobs:
           echo "candidate_sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
 
           node scripts/lingxi-upstream-risk.ts \
-            --base-ref "$ORIGIN_MAIN_BEFORE_SHA" \
+            --base-ref "$BASE_SHA" \
             --upstream-ref upstream/main \
             --candidate-ref HEAD \
             --json-out risk.json \
