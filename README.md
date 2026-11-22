@@ -6,86 +6,87 @@
 
 <h1 align="center">LingXi T3</h1>
 
-<p align="center">Independent personal fork of <a href="https://github.com/pingdotgg/t3code">T3 Code</a> — an open-source control plane for coding agents, with isolated desktop identity, automated upstream sync, and signed multi-channel releases.</p>
+<p align="center">基于 <a href="https://github.com/pingdotgg/t3code">T3 Code</a> 的独立个人分支版本 —— 面向编程智能体的开源控制平面，具备独立桌面应用身份、自动化上游同步以及签名多通道发布能力。</p>
 
 <p align="center">
-  <a href="https://github.com/LingXiFox/t3code/releases"><strong>Releases</strong></a> ·
-  <a href="./docs/README.md">Docs</a> ·
-  <a href="https://github.com/LingXiFox/t3code/issues">Issues</a> ·
-  <a href="https://github.com/pingdotgg/t3code">Upstream (pingdotgg/t3code)</a>
+  <a href="https://github.com/LingXiFox/t3code/releases"><strong>发行版下载</strong></a> ·
+  <a href="./docs/README.md">文档</a> ·
+  <a href="https://github.com/LingXiFox/t3code/issues">问题反馈</a> ·
+  <a href="https://github.com/pingdotgg/t3code">上游仓库 (pingdotgg/t3code)</a>
 </p>
 
-> **Fork Notice:** LingXi T3 is an independent personal fork maintained by [LingXiFox](https://github.com/LingXiFox) and is not affiliated with or endorsed by Ping Labs / T3 Tools. It preserves the MIT license and upstream attribution while isolating application identity, user data, and update channels from official T3 Code.
+> **分支说明：** LingXi T3 是由 [LingXiFox](https://github.com/LingXiFox) 维护的独立个人分支，与 Ping Labs / T3 Tools 官方无隶属或背书关系。本项目完整保留 MIT 开源协议与上游署名，并将应用身份、本地用户数据目录与更新通道与官方 T3 Code 完全隔离。
 
-LingXi T3 runs the coding agents on your machine and gives them one fast interface. Start a thread at your desk, then approve the next step from your phone.
+LingXi T3 负责调度你本机上的各类编程智能体，并提供统一高速的控制界面。你可以在桌面端开启会话，随后在手机端随时审批下一步操作。
 
-It works with Claude Code, Codex, Cursor, OpenCode, Grok Build, Antigravity, Kiro, Pi, Muse Code, fx, and any [ACP](./docs/user/providers-acp.md) agent. If an agent is set up on your computer, LingXi T3 can control it.
+目前支持 Claude Code、Codex、Cursor、OpenCode、Grok Build、Antigravity（含原生 Orchestrator 预设）、DeepSeek Harness (`dsh`)、Kiro、Pi、Muse Code、fx 以及任意 [ACP](./docs/user/providers-acp.md) 智能体。只要你的电脑上已经配置好对应智能体，LingXi T3 即可直接驱动。
 
-## Fork Isolation & Release Channels
+## 分支隔离与发布通道
 
-- **Isolated Desktop Identity:** Uses `com.lingxifox.lingxit3` (`LingXi T3` / `LingXi T3 Nightly`), custom URL schemes (`lingxit3://`, `lingxit3-dev://`), and separate local data/config directories (`~/.lingxi-t3`, `~/Library/Application Support/lingxi-t3`, `lingxi-t3`) so it never collides with official T3 Code installs.
-- **Branch Strategy:**
-  - `main`: clean mirror of `pingdotgg/t3code` `main` (never modified directly).
-  - `lingxifox`: default active branch carrying LingXi T3 customizations.
-- **Dual Update Channels:**
-  - **Stable (`latest`)**: promoted from verified builds (`latest-mac.yml`, `latest.yml`, `latest-linux.yml`, `latest-linux-arm64.yml`).
-  - **Nightly (`nightly`)**: prerelease builds (`nightly-mac.yml`, `nightly.yml`, `nightly-linux.yml`, `nightly-linux-arm64.yml`) published from `LingXiFox/t3code`.
+- **独立桌面身份**：采用 `com.lingxifox.lingxit3`（`LingXi T3` / `LingXi T3 Nightly`）、独立 URL Scheme（`lingxit3://`、`lingxit3-dev://`）以及独立数据与配置目录（`~/.lingxi-t3`、`~/Library/Application Support/lingxi-t3`、`lingxi-t3`），绝不与官方 T3 Code 安装发生冲突。
+- **分支策略**：
+  - `main`：纯净镜像上游 `pingdotgg/t3code` 的 `main` 分支（不直接修改）。
+  - `lingxifox`：默认主力开发分支，承载 LingXi T3 全部定制特性。
+- **双通道更新**：
+  - **稳定版 (`latest`)**：由通过验证的构建晋升发布（`latest-mac.yml`、`latest.yml`、`latest-linux.yml`、`latest-linux-arm64.yml`）。
+  - **每夜版 (`nightly`)**：由 `LingXiFox/t3code` 发布的预发行构建（`nightly-mac.yml`、`nightly.yml`、`nightly-linux.yml`、`nightly-linux-arm64.yml`）。
 
-## What you get
+## 核心特性
 
-- **Your subscriptions.** LingXi T3 does not resell tokens. It drives the agents you are already signed in to.
-- **Every agent in one place.** Change models in the middle of a thread. Let Claude hand a task to Codex.
-- **Desktop, web, and phone.** One server, and every client shows the same threads.
-- **Remote ready.** Run agents on any machine. Connect over your local network, Tailscale, or [T3 Connect](./docs/user/remote-access.md).
-- **Git built in.** Each thread can work in its own worktree. Review the diff, then commit, push, and open a pull request with one button.
-- **Fast.** Performance is a feature here. We measure it, and we treat a dropped frame as a bug.
-- **Open.** MIT licensed, forked from [pingdotgg/t3code](https://github.com/pingdotgg/t3code).
+- **自带订阅，零加价。** LingXi T3 不转售 Token，直接驱动你本机已登录的智能体与订阅配额。
+- **全智能体聚合工作台。** 随时在会话中切换模型或供应商，支持 Claude、Codex、DeepSeek Harness (`dsh --profile acp`)、Antigravity 等多后端协同工作。
+- **LingXi 定制体验。** 内置 `LingXi Night Sky` 像素极光主题（狐橙 / 炭黑 / 奶白配色与像素赤狐水印）、6 平台额度与上下文/缓存监控中心（含 Antigravity 多号池视图与实时会话浮窗）。
+- **桌面端、Web 端与移动端同步。** 一套本地或远端服务，全端实时同步会话状态。
+- **随时随地远程控制。** 支持局域网、Tailscale 或 [T3 Connect](./docs/user/remote-access.md) 隧道远程连接你的开发机。
+- **原生 Git 工作流。** 每个会话均可独立运行在专属 worktree 中，支持差异审阅与一键提交、推送及创建 PR。
+- **极致性能。** 掉帧即缺陷，持续针对 WebSocket 吞吐与渲染帧率优化。
+- **开源开放。** 基于 MIT 协议开源，衍生自 [pingdotgg/t3code](https://github.com/pingdotgg/t3code)。
 
-## Install
+## 安装使用
 
-### Desktop app
+### 桌面客户端
 
-Download signed installers for macOS, Windows, and Linux from [LingXi T3 Releases](https://github.com/LingXiFox/t3code/releases).
+前往 [LingXi T3 Releases](https://github.com/LingXiFox/t3code/releases) 下载对应 macOS、Windows 和 Linux 的签名安装包。
 
-### Command line
+### 命令行安装
 
-This installs the `t3` command from `LingXiFox/t3code` releases. Run `t3` to start the server and open the web app.
+以下命令将从 `LingXiFox/t3code` 发行版安装 `t3` 命令行工具，运行 `t3` 即可启动服务并打开 Web 界面：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LingXiFox/t3code/lingxifox/scripts/install.sh | sh
 ```
 
-On Windows, in PowerShell:
+Windows PowerShell 安装方式：
 
 ```powershell
 irm https://raw.githubusercontent.com/LingXiFox/t3code/lingxifox/scripts/install.ps1 | iex
 ```
 
-### Sign in to an agent
+### 登录至少一个智能体
 
-LingXi T3 needs one agent that is installed and signed in. For example, install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`, or install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`.
+LingXi T3 需要你本机已安装并登录至少一个编程智能体。例如安装 [Claude Code](https://claude.com/product/claude-code) 并执行 `claude auth login`，或安装 [Codex CLI](https://developers.openai.com/codex/cli) 并执行 `codex login`，也可直接使用已配置好的 DeepSeek Harness (`dsh`) 或 Antigravity (`agy`)。
 
-[Provider setup](./docs/user/install.md#providers) has the steps for each agent. [Install T3 Code](./docs/user/install.md) covers nightly builds, AppImage, WSL, and NixOS.
+详细配置请参阅 [Provider 配置指南](./docs/user/install.md#providers)，关于每夜版、AppImage、WSL 与 NixOS 安装说明请参阅 [安装指南](./docs/user/install.md)。
 
-## Documentation
+## 相关文档
 
-- [Install and first run](./docs/user/install.md)
-- [Remote access from a phone or another machine](./docs/user/remote-access.md)
-- [Permission modes](./docs/user/permission-modes.md)
-- [Source control](./docs/user/source-control.md)
-- [Connect outside agents over MCP](./docs/user/outside-agents.md)
-- [FAQ](./docs/user/faq.md)
+- [安装与首次运行](./docs/user/install.md)
+- [从手机或其他设备远程访问](./docs/user/remote-access.md)
+- [权限模式说明](./docs/user/permission-modes.md)
+- [源代码管理与 Git 工作流](./docs/user/source-control.md)
+- [通过 MCP 接入外部智能体](./docs/user/outside-agents.md)
+- [常见问题 (FAQ)](./docs/user/faq.md)
 
-[All docs](./docs/README.md) has the full list.
+完整文档索引见 [全部文档](./docs/README.md)。
 
-## Contributing
+## 参与贡献
 
-Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening an issue or pull request.
+在提交 Issue 或 Pull Request 前请先阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)。
 
-- Fork-specific issues and PRs: [LingXiFox/t3code](https://github.com/LingXiFox/t3code/issues) (target branch: `lingxifox`).
-- Upstream T3 Code bugs and feature discussions: [pingdotgg/t3code](https://github.com/pingdotgg/t3code).
-- Build from source with the [development runbook](./docs/operations/00_development.md#first-checkout). The [architecture overview](./docs/internals/01_architecture.md) explains how it works.
+- 本分支定制问题与 PR：[LingXiFox/t3code](https://github.com/LingXiFox/t3code/issues)（目标分支：`lingxifox`）。
+- 上游 T3 Code 缺陷与特性讨论：[pingdotgg/t3code](https://github.com/pingdotgg/t3code)。
+- 从源码构建请参考 [开发者运行手册](./docs/operations/00_development.md#first-checkout)，架构设计概览见 [架构说明](./docs/internals/01_architecture.md)。
 
-## License
+## 开源协议
 
-[MIT](./LICENSE) — Copyright © Ping Labs / T3 Code contributors, with independent fork modifications by LingXiFox.
+[MIT](./LICENSE) — Copyright © Ping Labs / T3 Code contributors，由 LingXiFox 维护独立个人分支修改。
