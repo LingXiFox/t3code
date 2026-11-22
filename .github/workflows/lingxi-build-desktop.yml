@@ -56,7 +56,7 @@ env:
 jobs:
   build-macos:
     name: Build macOS (${{ matrix.arch }})
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -150,6 +150,28 @@ jobs:
               printf '%s' "$CSC_LINK" | base64 --decode > "$TMP_P12"
             )
             rm -f "$TMP_P12"
+          fi
+
+      - name: Verify Xcode 26 and macOS 26 SDK
+        run: |
+          set -euo pipefail
+          if ! xcrun --sdk macosx --show-sdk-version | grep -Eq '^26(\.|$)'; then
+            XCODE_26_APP="$(ls -d /Applications/Xcode_26*.app /Applications/Xcode.app 2>/dev/null | sort -V | tail -n 1 || true)"
+            if [[ -n "$XCODE_26_APP" && -d "$XCODE_26_APP/Contents/Developer" ]]; then
+              sudo xcode-select -s "$XCODE_26_APP/Contents/Developer"
+            fi
+          fi
+          echo "Developer dir: $(xcode-select -p)"
+          xcodebuild -version
+          swift --version
+          SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
+          SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
+          echo "macOS SDK version: $SDK_VERSION"
+          echo "macOS SDK path: $SDK_PATH"
+          SDK_MAJOR="${SDK_VERSION%%.*}"
+          if [[ -z "$SDK_MAJOR" || "$SDK_MAJOR" -lt 26 ]]; then
+            echo "::error::macOS SDK >= 26 is required to compile native/apple-speech/AppleSpeechEngine.swift (found: $SDK_VERSION)."
+            exit 1
           fi
 
       - name: Build, sign, and notarize macOS desktop artifacts
