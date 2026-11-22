@@ -1,0 +1,115 @@
+name: LingXi Upstream Sync
+
+on:
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Dry run only (report delta without pushing or opening PR)
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: lingxi-upstream-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  upstream-sync:
+    name: Sync upstream/main and open/update PR to lingxifox
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    if: github.event_name == 'workflow_dispatch' || vars.LINGXI_AUTO_SYNC_ENABLED == 'true'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: lingxifox
+          fetch-depth: 0
+
+      - name: Fetch upstream pingdotgg/t3code
+        run: |
+          git config user.name "lingxifox-bot"
+          git config user.email "bot@lingxifox.dev"
+          if ! git remote get-url upstream >/dev/null 2>&1; then
+            git remote add upstream https://github.com/pingdotgg/t3code.git
+          fi
+          git fetch upstream main --tags --prune
+          git fetch origin main lingxifox --prune
+
+      - name: Mirror upstream/main to origin/main (fast-forward only)
+        id: mirror_main
+        run: |
+          UPSTREAM_SHA="$(git rev-parse upstream/main)"
+          ORIGIN_MAIN_SHA="$(git rev-parse origin/main)"
+          echo "upstream_sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+          if [[ "$UPSTREAM_SHA" == "$ORIGIN_MAIN_SHA" ]]; then
+            echo "main_updated=false" >> "$GITHUB_OUTPUT"
+            echo "origin/main already matches upstream/main ($UPSTREAM_SHA)."
+            exit 0
+          fi
+          if ! git merge-base --is-ancestor "$ORIGIN_MAIN_SHA" "$UPSTREAM_SHA"; then
+            echo "::error::origin/main ($ORIGIN_MAIN_SHA) has diverged from upstream/main ($UPSTREAM_SHA). Refusing non-fast-forward update."
+            exit 1
+          fi
+          echo "main_updated=true" >> "$GITHUB_OUTPUT"
+          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            echo "[dry-run] Would fast-forward origin/main from $ORIGIN_MAIN_SHA to $UPSTREAM_SHA."
+          else
+            git push origin "upstream/main:refs/heads/main"
+          fi
+
+      - name: Check delta against lingxifox and prepare sync branch
+        id: sync_branch
+        run: |
+          BEHIND_COUNT="$(git rev-list --count HEAD..upstream/main)"
+          echo "behind_count=$BEHIND_COUNT" >> "$GITHUB_OUTPUT"
+          if [[ "$BEHIND_COUNT" == "0" ]]; then
+            echo "sync_needed=false" >> "$GITHUB_OUTPUT"
+            echo "lingxifox already includes all upstream/main commits."
+            exit 0
+          fi
+          echo "sync_needed=true" >> "$GITHUB_OUTPUT"
+          echo "lingxifox is behind upstream/main by $BEHIND_COUNT commits."
+          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            git log --oneline -n 20 HEAD..upstream/main
+            exit 0
+          fi
+
+          SYNC_BRANCH="chore/upstream-sync"
+          git checkout -B "$SYNC_BRANCH" origin/lingxifox
+          if git merge --no-edit upstream/main; then
+            echo "merge_conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "merge_conflict=true" >> "$GITHUB_OUTPUT"
+            git merge --abort || true
+            echo "::error::Automatic merge of upstream/main into lingxifox conflicted. Resolve manually."
+            exit 1
+          fi
+          git push --force-with-lease origin "$SYNC_BRANCH"
+
+      - name: Create or update upstream sync PR
+        if: steps.sync_branch.outputs.sync_needed == 'true' && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SYNC_BRANCH="chore/upstream-sync"
+          EXISTING_PR="$(gh pr list --base lingxifox --head "$SYNC_BRANCH" --state open --json number --jq '.[0].number')"
+          BODY="Automated sync of \`pingdotgg/t3code\` (\`${{ steps.mirror_main.outputs.upstream_sha }}\`) into \`lingxifox\`.
+
+          - Behind count: \`${{ steps.sync_branch.outputs.behind_count }}\`
+          - Verification runs automatically via \`LingXi Verify\`."
+          if [[ -n "$EXISTING_PR" ]]; then
+            gh pr edit "$EXISTING_PR" --body "$BODY"
+          else
+            gh pr create \
+              --base lingxifox \
+              --head "$SYNC_BRANCH" \
+              --title "chore: sync upstream/main (${{ steps.mirror_main.outputs.upstream_sha }})" \
+              --body "$BODY"
+          fi
