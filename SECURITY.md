@@ -1,7 +1,6 @@
 # Security
 
-Report vulnerabilities to [security@t3.codes](mailto:security@t3.codes). The
-[security policy](.github/SECURITY.md) covers disclosure and safe harbor.
+Report vulnerabilities affecting **LingXi T3** fork-specific behavior or releases via [LingXiFox/t3code GitHub Security Advisories](https://github.com/LingXiFox/t3code/security/advisories/new). For vulnerabilities in upstream T3 Code or Ping Labs infrastructure, report directly to upstream ([`pingdotgg/t3code`](https://github.com/pingdotgg/t3code) / `security@t3.codes`). The [security policy](.github/SECURITY.md) covers disclosure details.
 
 The rest of this file is for agents and maintainers auditing T3 Code or triaging
 a report. It says who is trusted with what, which boundaries a real finding
