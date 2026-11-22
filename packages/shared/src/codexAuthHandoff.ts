@@ -71,11 +71,14 @@ export function codexAuthHandoffUrl(input: CodexAuthHandoff, development = false
 }
 
 export function readCodexAuthHandoff(value: string, development: boolean) {
+  const allowedProtocols = development
+    ? ["t3code-dev:", "lingxit3-dev:"]
+    : ["t3code:", "lingxit3:"];
   try {
     const url = new URL(value);
     if (
       value.length > 32_768 ||
-      url.protocol !== (development ? "t3code-dev:" : "t3code:") ||
+      !allowedProtocols.includes(url.protocol) ||
       url.host !== "auth" ||
       url.pathname !== "/codex" ||
       url.username ||
