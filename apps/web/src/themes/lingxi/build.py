@@ -31,7 +31,7 @@ LINGXI_NIGHT_SKY = ThemeSpec(
     const_prefix="LINGXI_NIGHT_SKY",
     name="LingXi Night Sky",
     sources=("theme.css", "plus.css"),
-    sky=Sky(344, 194, seed=8, speckles=False),
+    sky=Sky(336, 189, seed=8, speckles=False),
     plus_pressed=",[data-model-picker-sidebar] [aria-pressed=true]",
 )
 

@@ -1,5 +1,19 @@
 const NIGHTLY_SERVER_VERSION_PATTERN = /^[^-+]+-(?:nightly|preview)\.\d{8}\.\d+$/;
 
+export function splitAppBrandName(baseName: string): {
+  readonly primary: string;
+  readonly secondary: string | null;
+} {
+  const trimmed = baseName.trim();
+  const spaceIndex = trimmed.indexOf(" ");
+  if (spaceIndex <= 0) {
+    return { primary: trimmed, secondary: null };
+  }
+  const primary = trimmed.slice(0, spaceIndex).trim();
+  const secondary = trimmed.slice(spaceIndex + 1).trim();
+  return { primary, secondary: secondary.length > 0 ? secondary : null };
+}
+
 export function formatAppDisplayName(input: {
   readonly baseName: string;
   readonly stageLabel: string;
