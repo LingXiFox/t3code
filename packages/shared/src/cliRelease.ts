@@ -188,10 +188,15 @@ export function buildUpdateFeedManifest(options: {
   readonly databaseMigration: number;
   readonly releasedAt: string;
   readonly repository?: string;
+  readonly name?: string | undefined;
+  readonly body?: string | undefined;
+  readonly commitSha?: string | undefined;
 }): Record<string, unknown> {
   const repository = options.repository ?? CLI_RELEASE_REPOSITORY;
   return {
     tag_name: options.tag,
+    name: options.name ?? `LingXi T3 ${options.version}`,
+    ...(options.body !== undefined ? { body: options.body } : {}),
     draft: false,
     prerelease: options.channel === "nightly",
     version: options.version,
@@ -199,6 +204,7 @@ export function buildUpdateFeedManifest(options: {
     channel: options.channel,
     repository,
     releaseUrl: `https://github.com/${repository}/releases/tag/${options.tag}`,
+    ...(options.commitSha !== undefined ? { commitSha: options.commitSha } : {}),
     databaseMigration: options.databaseMigration,
     t3code: {
       databaseMigration: options.databaseMigration,

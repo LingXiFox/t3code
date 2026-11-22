@@ -187,6 +187,9 @@ it.effect(
         channel: "nightly",
         databaseMigration: 105,
         releasedAt: "2026-11-22T07:30:00.000Z",
+        name: `LingXi T3 ${nightlyVersion}`,
+        body: "Nightly release notes",
+        commitSha: "9db4bdd8c95909d918b1d72b6e209fd801a12a8a",
       });
       const latestManifest = buildUpdateFeedManifest({
         version: stableVersion,
@@ -194,6 +197,9 @@ it.effect(
         channel: "latest",
         databaseMigration: 105,
         releasedAt: "2026-11-22T07:30:00.000Z",
+        name: `LingXi T3 ${stableVersion}`,
+        body: "Stable release notes",
+        commitSha: "9db4bdd8c95909d918b1d72b6e209fd801a12a8a",
       });
       const releaseMetaComment = buildReleaseMetadataComment({
         version: nightlyVersion,

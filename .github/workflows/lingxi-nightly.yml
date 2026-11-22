@@ -20,6 +20,21 @@ on:
       - completed
     branches:
       - lingxifox
+  workflow_call:
+    inputs:
+      target_sha:
+        description: Verified commit SHA pushed to lingxifox by lingxi-upstream-sync
+        required: true
+        type: string
+      force_publish:
+        description: Publish even when patch-id comparison reports no-change
+        required: false
+        type: boolean
+        default: false
+      caller_verified:
+        description: Must be true when invoked after upstream-sync candidate CI succeeded
+        required: true
+        type: boolean
 
 concurrency:
   group: lingxi-nightly
@@ -38,7 +53,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'workflow_dispatch' &&
+        startsWith(github.workflow_ref, 'LingXiFox/t3code/.github/workflows/lingxi-nightly.yml@')
+      ) ||
       (
         github.event_name == 'workflow_run' &&
         github.event.workflow_run.conclusion == 'success' &&
@@ -46,6 +64,12 @@ jobs:
         github.event.workflow_run.head_branch == 'lingxifox' &&
         github.event.workflow_run.head_repository.full_name == 'LingXiFox/t3code' &&
         vars.LINGXI_AUTO_NIGHTLY_ENABLED == 'true'
+      ) ||
+      (
+        startsWith(github.workflow_ref, 'LingXiFox/t3code/.github/workflows/lingxi-upstream-sync.yml@refs/heads/lingxifox') &&
+        vars.LINGXI_AUTO_NIGHTLY_ENABLED == 'true' &&
+        inputs.caller_verified == true &&
+        inputs.target_sha != ''
       )
     outputs:
       should_publish: ${{ steps.plan.outputs.should_publish }}
@@ -110,6 +134,15 @@ jobs:
               echo "::error::Checked out SHA ($COMMIT_SHA) does not match workflow_run head_sha (${{ github.event.workflow_run.head_sha }})."
               exit 1
             fi
+          elif [[ "${{ github.workflow_ref }}" == LingXiFox/t3code/.github/workflows/lingxi-upstream-sync.yml@refs/heads/lingxifox* ]]; then
+            if [[ "${{ vars.LINGXI_AUTO_NIGHTLY_ENABLED }}" != "true" || "${{ inputs.caller_verified }}" != "true" ]]; then
+              echo "::error::Upstream sync workflow_call Nightly trigger requires LINGXI_AUTO_NIGHTLY_ENABLED=true and caller_verified=true."
+              exit 1
+            fi
+            if [[ "$COMMIT_SHA" != "${{ inputs.target_sha }}" || "$COMMIT_SHA" != "$LINGXIFOX_HEAD" ]]; then
+              echo "::error::Upstream sync Nightly commit ($COMMIT_SHA) must match target_sha (${{ inputs.target_sha }}) and origin/lingxifox HEAD ($LINGXIFOX_HEAD)."
+              exit 1
+            fi
           else
             if [[ "${{ github.ref }}" != "refs/heads/lingxifox" ]]; then
               echo "::error::Manual Nightly dispatch must run from refs/heads/lingxifox (got: ${{ github.ref }})."
@@ -119,9 +152,10 @@ jobs:
               echo "::error::First Nightly release must target current origin/lingxifox HEAD ($LINGXIFOX_HEAD), got $COMMIT_SHA."
               exit 1
             fi
-            PASSED_COUNT="$(gh run list --workflow lingxi-verify.yml --commit "$COMMIT_SHA" --branch lingxifox --event push --limit 10 --json conclusion --jq 'map(select(.conclusion == "success")) | length')"
-            if [[ "$PASSED_COUNT" == "0" ]]; then
-              echo "::error::Commit $COMMIT_SHA does not have a passing push-triggered LingXi Verify run on lingxifox."
+            VERIFY_PASSED="$(gh run list --workflow lingxi-verify.yml --commit "$COMMIT_SHA" --branch lingxifox --limit 10 --json conclusion,event --jq '[.[] | select(.conclusion == "success" and (.event == "push" or .event == "workflow_dispatch"))] | length')"
+            SYNC_PASSED="$(gh run list --workflow lingxi-upstream-sync.yml --commit "$COMMIT_SHA" --limit 10 --json conclusion --jq '[.[] | select(.conclusion == "success")] | length')"
+            if [[ "$VERIFY_PASSED" == "0" && "$SYNC_PASSED" == "0" ]]; then
+              echo "::error::Commit $COMMIT_SHA does not have a passing LingXi Verify or LingXi Upstream Sync run on lingxifox."
               exit 1
             fi
           fi
@@ -147,14 +181,36 @@ jobs:
 
           CLASSIFICATION="$(node -e 'console.log(JSON.parse(process.argv[1]).classification)' "$CLASSIFY_JSON")"
           SHOULD_PUBLISH="$(node -e 'console.log(JSON.parse(process.argv[1]).shouldPublishNightly)' "$CLASSIFY_JSON")"
-          if [[ "${{ inputs.force_publish }}" == "true" ]]; then
+
+          EXISTING_TAGS_FOR_SHA="$(git tag --points-at "$commit_sha" 'v*-nightly.*')"
+          if [[ -n "$EXISTING_TAGS_FOR_SHA" && "${{ inputs.force_publish }}" != "true" ]]; then
+            CLASSIFICATION="already-released"
+            SHOULD_PUBLISH="false"
+            echo "Commit $commit_sha already has Nightly release tag(s): $EXISTING_TAGS_FOR_SHA. Skipping duplicate release."
+          elif [[ "${{ inputs.force_publish }}" == "true" ]]; then
             SHOULD_PUBLISH="true"
+          fi
+
+          if [[ "$SHOULD_PUBLISH" == "true" ]] && git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "::error::Target Nightly tag ${TAG} already exists."
+            exit 1
           fi
 
           if [[ "$(git rev-parse HEAD)" != "$commit_sha" ]]; then
             echo "::error::HEAD moved unexpectedly during planning."
             exit 1
           fi
+
+          {
+            echo "### Nightly Release Plan"
+            echo ""
+            echo "- **Trigger**: \`${{ github.event_name }}\` (\`${{ github.workflow_ref }}\`)"
+            echo "- **Commit SHA**: \`$commit_sha\`"
+            echo "- **Classification**: \`$CLASSIFICATION\`"
+            echo "- **Should Publish**: \`$SHOULD_PUBLISH\`"
+            echo "- **Version / Tag**: \`$VERSION\` / \`$TAG\`"
+            echo "- **Database Migration**: \`$DB_MIG\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
           echo "commit_sha=$commit_sha" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
