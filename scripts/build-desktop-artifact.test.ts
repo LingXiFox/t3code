@@ -39,9 +39,11 @@ import {
   packWindowsServerAsar,
   preflightWindowsDesktopBuild,
   renderMacPasskeyEntitlements,
+  renderStandardMacHardenedRuntimeEntitlements,
   resolveMacFileExclusions,
   resolveMacWebAuthnEntitlements,
   resolveMacPasskeySigningConfiguration,
+  resolveOptionalMacPasskeySigningConfiguration,
   resolveMergedStageDependencies,
   resolveBuildOptions,
   stageWslRuntimeArchive,
@@ -1999,4 +2001,44 @@ it.effect.skipIf(!symlinksSupported)("preserves relative links when replacing di
     assert.equal(yield* fs.readLink(path.join(output, app, "Current")), "New.plist");
     assert.equal(yield* fs.readFileString(path.join(output, app, "Current")), "rebuilt-app");
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
+
+it("treats passkey provisioning profile as optional for standard macOS Developer ID signing", () => {
+  assert.isUndefined(resolveOptionalMacPasskeySigningConfiguration({}));
+  assert.isUndefined(
+    resolveOptionalMacPasskeySigningConfiguration({
+      T3CODE_APPLE_TEAM_ID: "ABC1234567",
+      T3CODE_MACOS_PROVISIONING_PROFILE: "   ",
+    }),
+  );
+
+  const entitlements = renderStandardMacHardenedRuntimeEntitlements();
+  assert.include(entitlements, "com.apple.security.cs.allow-jit");
+  assert.include(entitlements, "com.apple.security.cs.allow-unsigned-executable-memory");
+  assert.include(entitlements, "com.apple.security.cs.disable-library-validation");
+  assert.include(entitlements, "com.apple.security.device.camera");
+  assert.include(entitlements, "com.apple.security.device.audio-input");
+  assert.notInclude(entitlements, "com.apple.developer.associated-domains");
+  assert.notInclude(entitlements, "com.apple.application-identifier");
+});
+
+it.effect(
+  "configures hardenedRuntime and entitlements for signed macOS builds without provisioningProfile",
+  () =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.0.48-nightly.20261122.1",
+        true,
+        false,
+        undefined,
+        { entitlementsPath: "/tmp/entitlements.mac.plist" },
+      );
+      const mac = config.mac as Record<string, unknown>;
+      assert.equal(mac.hardenedRuntime, true);
+      assert.equal(mac.entitlements, "/tmp/entitlements.mac.plist");
+      assert.equal(mac.entitlementsInherit, "/tmp/entitlements.mac.plist");
+      assert.notProperty(mac, "provisioningProfile");
+    }).pipe(Effect.provide(NodeServices.layer)),
 );
