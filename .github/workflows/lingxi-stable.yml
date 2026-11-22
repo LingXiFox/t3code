@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       nightly_tag:
-        description: Verified Nightly tag to promote (e.g. v0.0.48-nightly.20261122.1)
+        description: Verified Nightly tag to promote (e.g. v0.1.11-nightly.20261122.1)
         required: true
         type: string
 
@@ -14,15 +14,20 @@ concurrency:
 
 permissions:
   contents: write
+  actions: read
 
 env:
   VP_TELEMETRY_DISABLED: "1"
 
 jobs:
-  promote-stable:
-    name: Promote Nightly to Stable
+  plan:
+    name: Plan Stable Promotion Build
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
+    outputs:
+      commit_sha: ${{ steps.resolve.outputs.commit_sha }}
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -44,62 +49,61 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Resolve stable version and release notes from nightly tag
+      - name: Resolve stable version and verify Nightly commit
         id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git fetch origin main --tags --prune
+          git fetch origin +refs/heads/main:refs/remotes/origin/main --tags --prune
           VERSION_JSON="$(node scripts/lingxi-release-source.ts resolve-version --channel latest --nightly-tag "${{ inputs.nightly_tag }}")"
           VERSION="$(node -e 'console.log(JSON.parse(process.argv[1]).version)' "$VERSION_JSON")"
           TAG="$(node -e 'console.log(JSON.parse(process.argv[1]).tag)' "$VERSION_JSON")"
-          TARGET_SHA="$(git rev-list -n 1 "${{ inputs.nightly_tag }}")"
+          COMMIT_SHA="$(git rev-list -n 1 "${{ inputs.nightly_tag }}")"
+
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "::error::Stable tag ${TAG} already exists."
+            exit 1
+          fi
+
+          PASSED_COUNT="$(gh run list --workflow lingxi-verify.yml --commit "$COMMIT_SHA" --limit 10 --json conclusion --jq 'map(select(.conclusion == "success")) | length')"
+          if [[ "$PASSED_COUNT" == "0" ]]; then
+            echo "::error::Commit $COMMIT_SHA does not have a passing LingXi Verify run."
+            exit 1
+          fi
 
           node scripts/lingxi-release-source.ts classify-and-notes \
             --channel latest \
             --version "$VERSION" \
             --tag "$TAG" \
-            --head-ref "$TARGET_SHA" \
+            --head-ref "$COMMIT_SHA" \
             --upstream-ref origin/main \
             --notes-out release-notes.md \
             --feed-out latest.json
 
+          echo "commit_sha=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "target_sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Verify LingXi Verify passed on target commit
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          CONCLUSION="$(gh run list --workflow lingxi-verify.yml --commit "${{ steps.resolve.outputs.target_sha }}" --limit 1 --json conclusion --jq '.[0].conclusion')"
-          if [[ "$CONCLUSION" != "success" ]]; then
-            echo "::error::Commit ${{ steps.resolve.outputs.target_sha }} does not have a passing LingXi Verify run (got: $CONCLUSION)."
-            exit 1
-          fi
-
-      - name: Download assets from Nightly release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir -p release-assets
-          gh release download "${{ inputs.nightly_tag }}" --dir release-assets
-
-      - name: Publish GitHub Stable Release
-        uses: softprops/action-gh-release@v2
+      - name: Upload stable metadata artifacts
+        uses: actions/upload-artifact@v5
         with:
-          tag_name: ${{ steps.resolve.outputs.tag }}
-          target_commitish: ${{ steps.resolve.outputs.target_sha }}
-          name: LingXi T3 ${{ steps.resolve.outputs.version }}
-          body_path: release-notes.md
-          prerelease: false
-          make_latest: "true"
-          files: release-assets/*
+          name: lingxi-stable-meta
+          path: |
+            release-notes.md
+            latest.json
+          retention-days: 3
 
-      - name: Publish update-feed/latest.json manifest
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: update-feed
-          target_commitish: ${{ steps.resolve.outputs.target_sha }}
-          name: LingXi T3 Update Feed
-          prerelease: false
-          make_latest: "false"
-          files: latest.json
+  release:
+    name: Build, Sign & Publish Stable
+    needs: plan
+    uses: ./.github/workflows/lingxi-build-desktop.yml
+    with:
+      commit_sha: ${{ needs.plan.outputs.commit_sha }}
+      version: ${{ needs.plan.outputs.version }}
+      tag: ${{ needs.plan.outputs.tag }}
+      channel: latest
+      prerelease: false
+      make_latest: "true"
+      meta_artifact_name: lingxi-stable-meta
+      feed_file: latest.json
+    secrets: inherit

@@ -29,6 +29,7 @@ const GitHubReleasePayload = Schema.Struct({
   draft: Schema.optionalKey(Schema.Boolean),
   prerelease: Schema.optionalKey(Schema.Boolean),
   body: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  databaseMigration: Schema.optionalKey(Schema.Int),
   t3code: Schema.optionalKey(Schema.Unknown),
 });
 type GitHubReleasePayload = typeof GitHubReleasePayload.Type;
@@ -65,6 +66,7 @@ function parseReleaseVersion(tagName: string): string | undefined {
 function extractDatabaseMigration(payload: GitHubReleasePayload): number | undefined {
   const direct = npmReleaseDatabaseMigration(payload);
   if (direct !== undefined) return direct;
+  if (payload.databaseMigration !== undefined) return payload.databaseMigration;
   if (!payload.body) return undefined;
   const match = RELEASE_META_COMMENT_RE.exec(payload.body);
   if (!match?.[1]) return undefined;
