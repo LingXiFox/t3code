@@ -7,6 +7,7 @@ if [[ $# -lt 1 ]]; then
 fi
 
 TARGET_PATH="$1"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REQUIRE_NOTARIZED="${LINGXI_REQUIRE_NOTARIZED:-1}"
 REQUIRE_DMG_NOTARIZED="${LINGXI_REQUIRE_DMG_NOTARIZED:-0}"
 EXPECTED_BUNDLE_ID="${LINGXI_EXPECTED_BUNDLE_ID:-com.lingxifox.lingxit3}"
@@ -80,17 +81,14 @@ if ! grep -q "owner: LingXiFox" "$APP_UPDATE_YML" || ! grep -q "repo: t3code" "$
 fi
 echo "[verify-macos-signing] app-update.yml OK"
 
-STAGED_PKG_JSON="$RESOURCES_DIR/app.asar.unpacked/package.json"
-if [[ ! -f "$STAGED_PKG_JSON" ]]; then
-  echo "[verify-macos-signing] Checking app.asar for lingxiUnsignedMacBuild marker..."
-  if grep -qa "lingxiUnsignedMacBuild" "$RESOURCES_DIR/app.asar"; then
-    echo "Signed build must not contain lingxiUnsignedMacBuild=true" >&2
-    exit 1
-  fi
-elif grep -q '"lingxiUnsignedMacBuild": true' "$STAGED_PKG_JSON"; then
-  echo "Signed build must not contain lingxiUnsignedMacBuild=true" >&2
+APP_ASAR="$RESOURCES_DIR/app.asar"
+if [[ ! -f "$APP_ASAR" ]]; then
+  echo "Missing app.asar at $APP_ASAR" >&2
   exit 1
 fi
+node "$SCRIPT_DIR/verify-macos-asar-manifest.ts" \
+  "$APP_ASAR" \
+  --unpacked-package-json "$RESOURCES_DIR/app.asar.unpacked/package.json"
 
 if [[ "$REQUIRE_NOTARIZED" == "1" ]]; then
   echo "[verify-macos-signing] Checking Gatekeeper & stapled notarization ticket..."
