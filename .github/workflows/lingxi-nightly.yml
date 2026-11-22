@@ -37,9 +37,16 @@ jobs:
     name: Plan Nightly Release
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    if: >
+    if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' && vars.LINGXI_AUTO_NIGHTLY_ENABLED == 'true')
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'lingxifox' &&
+        github.event.workflow_run.head_repository.full_name == 'LingXiFox/t3code' &&
+        vars.LINGXI_AUTO_NIGHTLY_ENABLED == 'true'
+      )
     outputs:
       should_publish: ${{ steps.plan.outputs.should_publish }}
       commit_sha: ${{ steps.plan.outputs.commit_sha }}
@@ -68,22 +75,58 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Verify target commit passed LingXi Verify
+      - name: Fetch trusted origin refs and tags
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main +refs/heads/lingxifox:refs/remotes/origin/lingxifox
+          git fetch origin --tags --prune
+
+      - name: Verify trusted source and LingXi Verify gate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+          if [[ "${{ github.repository }}" != "LingXiFox/t3code" ]]; then
+            echo "::error::Refusing release from untrusted repository '${{ github.repository }}'."
+            exit 1
+          fi
+
           COMMIT_SHA="$(git rev-parse HEAD)"
-          echo "commit_sha=$COMMIT_SHA" >> "$GITHUB_ENV"
-          if [[ "${{ github.event_name }}" != "workflow_run" ]]; then
-            PASSED_COUNT="$(gh run list --workflow lingxi-verify.yml --commit "$COMMIT_SHA" --limit 10 --json conclusion --jq 'map(select(.conclusion == "success")) | length')"
+          LINGXIFOX_HEAD="$(git rev-parse origin/lingxifox)"
+
+          if ! git merge-base --is-ancestor "$COMMIT_SHA" "$LINGXIFOX_HEAD"; then
+            echo "::error::Commit $COMMIT_SHA is not on trusted branch origin/lingxifox ($LINGXIFOX_HEAD)."
+            exit 1
+          fi
+
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            if [[ "${{ github.event.workflow_run.conclusion }}" != "success" ||
+                  "${{ github.event.workflow_run.event }}" != "push" ||
+                  "${{ github.event.workflow_run.head_branch }}" != "lingxifox" ||
+                  "${{ github.event.workflow_run.head_repository.full_name }}" != "LingXiFox/t3code" ]]; then
+              echo "::error::Untrusted workflow_run trigger metadata."
+              exit 1
+            fi
+            if [[ "$COMMIT_SHA" != "${{ github.event.workflow_run.head_sha }}" ]]; then
+              echo "::error::Checked out SHA ($COMMIT_SHA) does not match workflow_run head_sha (${{ github.event.workflow_run.head_sha }})."
+              exit 1
+            fi
+          else
+            if [[ "${{ github.ref }}" != "refs/heads/lingxifox" ]]; then
+              echo "::error::Manual Nightly dispatch must run from refs/heads/lingxifox (got: ${{ github.ref }})."
+              exit 1
+            fi
+            if [[ -z "$(git tag --list 'v*-nightly.*')" && "$COMMIT_SHA" != "$LINGXIFOX_HEAD" ]]; then
+              echo "::error::First Nightly release must target current origin/lingxifox HEAD ($LINGXIFOX_HEAD), got $COMMIT_SHA."
+              exit 1
+            fi
+            PASSED_COUNT="$(gh run list --workflow lingxi-verify.yml --commit "$COMMIT_SHA" --branch lingxifox --event push --limit 10 --json conclusion --jq 'map(select(.conclusion == "success")) | length')"
             if [[ "$PASSED_COUNT" == "0" ]]; then
-              echo "::error::Commit $COMMIT_SHA does not have a passing LingXi Verify run."
+              echo "::error::Commit $COMMIT_SHA does not have a passing push-triggered LingXi Verify run on lingxifox."
               exit 1
             fi
           fi
 
-      - name: Fetch origin/main and tags
-        run: git fetch origin +refs/heads/main:refs/remotes/origin/main --tags --prune
+          echo "commit_sha=$COMMIT_SHA" >> "$GITHUB_ENV"
 
       - name: Resolve version and classify changes
         id: plan
@@ -106,6 +149,11 @@ jobs:
           SHOULD_PUBLISH="$(node -e 'console.log(JSON.parse(process.argv[1]).shouldPublishNightly)' "$CLASSIFY_JSON")"
           if [[ "${{ inputs.force_publish }}" == "true" ]]; then
             SHOULD_PUBLISH="true"
+          fi
+
+          if [[ "$(git rev-parse HEAD)" != "$commit_sha" ]]; then
+            echo "::error::HEAD moved unexpectedly during planning."
+            exit 1
           fi
 
           echo "commit_sha=$commit_sha" >> "$GITHUB_OUTPUT"
