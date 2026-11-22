@@ -1,0 +1,434 @@
+name: LingXi Nightly Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_publish:
+        description: Publish even when patch-id comparison reports no-change
+        required: false
+        type: boolean
+        default: false
+      allow_unsigned_macos:
+        description: Allow unsigned macOS build (for dry verification only, never for auto-update release)
+        required: false
+        type: boolean
+        default: false
+  workflow_run:
+    workflows:
+      - LingXi Verify
+    types:
+      - completed
+    branches:
+      - lingxifox
+
+concurrency:
+  group: lingxi-nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  VP_TELEMETRY_DISABLED: "1"
+
+jobs:
+  plan:
+    name: Plan Nightly Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && vars.LINGXI_AUTO_NIGHTLY_ENABLED == 'true')
+    outputs:
+      should_publish: ${{ steps.plan.outputs.should_publish }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      classification: ${{ steps.plan.outputs.classification }}
+      database_migration: ${{ steps.plan.outputs.database_migration }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: lingxifox
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Fetch tags and origin/main
+        run: git fetch origin main --tags --prune
+
+      - name: Resolve version and classify changes
+        id: plan
+        run: |
+          VERSION_JSON="$(node scripts/lingxi-release-source.ts resolve-version --channel nightly)"
+          VERSION="$(node -e 'console.log(JSON.parse(process.argv[1]).version)' "$VERSION_JSON")"
+          TAG="$(node -e 'console.log(JSON.parse(process.argv[1]).tag)' "$VERSION_JSON")"
+          DB_MIG="$(node -e 'console.log(JSON.parse(process.argv[1]).databaseMigration)' "$VERSION_JSON")"
+
+          CLASSIFY_JSON="$(node scripts/lingxi-release-source.ts classify-and-notes \
+            --channel nightly \
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --head-ref HEAD \
+            --upstream-ref origin/main \
+            --notes-out release-notes.md \
+            --feed-out nightly.json)"
+
+          CLASSIFICATION="$(node -e 'console.log(JSON.parse(process.argv[1]).classification)' "$CLASSIFY_JSON")"
+          SHOULD_PUBLISH="$(node -e 'console.log(JSON.parse(process.argv[1]).shouldPublishNightly)' "$CLASSIFY_JSON")"
+          if [[ "${{ inputs.force_publish }}" == "true" ]]; then
+            SHOULD_PUBLISH="true"
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "classification=$CLASSIFICATION" >> "$GITHUB_OUTPUT"
+          echo "database_migration=$DB_MIG" >> "$GITHUB_OUTPUT"
+          echo "should_publish=$SHOULD_PUBLISH" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release metadata artifacts
+        if: steps.plan.outputs.should_publish == 'true'
+        uses: actions/upload-artifact@v5
+        with:
+          name: lingxi-nightly-meta
+          path: |
+            release-notes.md
+            nightly.json
+          retention-days: 3
+
+  build-macos:
+    name: Build macOS (${{ matrix.arch }})
+    needs: plan
+    if: needs.plan.outputs.should_publish == 'true'
+    runs-on: macos-15
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: lingxifox
+
+      - name: Verify Apple Developer ID & Notarization secrets
+        id: signing_gate
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          if [[ -n "$CSC_LINK" && -n "$CSC_KEY_PASSWORD" && -n "$APPLE_API_KEY" && -n "$APPLE_API_KEY_ID" && -n "$APPLE_API_ISSUER" ]]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ inputs.allow_unsigned_macos }}" == "true" ]]; then
+            echo "::warning::Apple signing secrets missing; running unsigned build because allow_unsigned_macos=true."
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Missing Apple Developer ID / Notarization secrets (CSC_LINK, CSC_KEY_PASSWORD, APPLE_API_KEY, APPLE_API_KEY_ID, APPLE_API_ISSUER). Refusing to publish unsigned macOS auto-update release."
+            exit 1
+          fi
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Ensure Rosetta for macOS x64 bytecode generation
+        if: matrix.arch == 'x64'
+        run: |
+          if [[ "$(uname -m)" == "arm64" ]] && ! /usr/bin/arch -x86_64 /usr/bin/true; then
+            sudo /usr/sbin/softwareupdate --install-rosetta --agree-to-license
+          fi
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.arch == 'x64' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
+
+      - name: Write Apple API Key for notarization
+        if: steps.signing_gate.outputs.signed == 'true'
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/apple-keys"
+          printf '%s' "$APPLE_API_KEY" > "$RUNNER_TEMP/apple-keys/AuthKey.p8"
+          echo "APPLE_API_KEY_FILE=$RUNNER_TEMP/apple-keys/AuthKey.p8" >> "$GITHUB_ENV"
+
+      - name: Build macOS desktop artifacts
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ env.APPLE_API_KEY_FILE }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          T3CODE_DESKTOP_SIGN: ${{ steps.signing_gate.outputs.signed }}
+        run: |
+          args=(
+            --platform mac
+            --arch "${{ matrix.arch }}"
+            --build-version "${{ needs.plan.outputs.version }}"
+            --output-dir dist-desktop
+          )
+          if [[ "${{ steps.signing_gate.outputs.signed }}" == "true" ]]; then
+            args+=(--signed)
+          fi
+          node scripts/build-desktop-artifact.ts "${args[@]}"
+
+      - name: Collect release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release-publish
+          shopt -s nullglob
+          for pattern in "dist-desktop/*.dmg" "dist-desktop/*.zip" "dist-desktop/*.blockmap" "dist-desktop/*.yml"; do
+            for file in $pattern; do
+              [[ "$file" == */builder-debug.yml ]] && continue
+              cp "$file" release-publish/
+            done
+          done
+          if [[ "${{ matrix.arch }}" != "arm64" ]]; then
+            for manifest in release-publish/*-mac.yml; do
+              mv "$manifest" "${manifest%.yml}-${{ matrix.arch }}.yml"
+            done
+          fi
+
+      - name: Verify macOS code signature and notarization
+        if: steps.signing_gate.outputs.signed == 'true'
+        run: |
+          DMG_PATH="$(find release-publish -maxdepth 1 -name '*.dmg' -print -quit)"
+          if [[ -z "$DMG_PATH" ]]; then
+            echo "::error::No .dmg artifact found in release-publish/"
+            exit 1
+          fi
+          bash scripts/verify-macos-signing.sh "$DMG_PATH"
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: macos-${{ matrix.arch }}
+          path: release-publish/*
+          if-no-files-found: error
+          retention-days: 3
+
+  build-linux:
+    name: Build Linux (${{ matrix.arch }})
+    needs: plan
+    if: needs.plan.outputs.should_publish == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: lingxifox
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.arch == 'x64' && 'x86_64-unknown-linux-gnu' || 'aarch64-unknown-linux-gnu' }}
+
+      - name: Build Linux desktop artifacts
+        run: |
+          node scripts/build-desktop-artifact.ts \
+            --platform linux \
+            --arch "${{ matrix.arch }}" \
+            --build-version "${{ needs.plan.outputs.version }}" \
+            --output-dir dist-desktop
+
+      - name: Collect release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release-publish
+          shopt -s nullglob
+          for pattern in "dist-desktop/*.AppImage" "dist-desktop/*.deb" "dist-desktop/*.blockmap" "dist-desktop/*.yml"; do
+            for file in $pattern; do
+              [[ "$file" == */builder-debug.yml ]] && continue
+              cp "$file" release-publish/
+            done
+          done
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: linux-${{ matrix.arch }}
+          path: release-publish/*
+          if-no-files-found: error
+          retention-days: 3
+
+  build-windows:
+    name: Build Windows (${{ matrix.arch }})
+    needs: plan
+    if: needs.plan.outputs.should_publish == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+          - arch: arm64
+            runner: windows-11-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: lingxifox
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.arch == 'x64' && 'x86_64-pc-windows-msvc' || 'aarch64-pc-windows-msvc' }}
+
+      - name: Build Windows desktop artifacts
+        shell: bash
+        run: |
+          node scripts/build-desktop-artifact.ts \
+            --platform win \
+            --arch "${{ matrix.arch }}" \
+            --build-version "${{ needs.plan.outputs.version }}" \
+            --output-dir dist-desktop
+
+      - name: Collect release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-publish
+          shopt -s nullglob
+          for pattern in "dist-desktop/*.exe" "dist-desktop/*.blockmap" "dist-desktop/*.yml"; do
+            for file in $pattern; do
+              [[ "$file" == */builder-debug.yml ]] && continue
+              cp "$file" release-publish/
+            done
+          done
+          for manifest in release-publish/*.yml; do
+            mv "$manifest" "${manifest%.yml}-win-${{ matrix.arch }}.yml"
+          done
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: windows-${{ matrix.arch }}
+          path: release-publish/*
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    name: Publish LingXi Nightly Release
+    needs: [plan, build-macos, build-linux, build-windows]
+    if: needs.plan.outputs.should_publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: lingxifox
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: release-artifacts
+
+      - name: Merge multi-arch update manifests and collect assets
+        run: |
+          mkdir -p release-assets
+          find release-artifacts -type f ! -path 'release-artifacts/lingxi-nightly-meta/*' -exec cp {} release-assets/ \;
+          node scripts/merge-release-update-manifests.ts release-assets
+
+      - name: Create GitHub Nightly Prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.plan.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: LingXi T3 ${{ needs.plan.outputs.version }}
+          body_path: release-artifacts/lingxi-nightly-meta/release-notes.md
+          prerelease: true
+          make_latest: "false"
+          files: release-assets/*
+
+      - name: Publish update-feed/nightly.json manifest
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: update-feed
+          target_commitish: ${{ github.sha }}
+          name: LingXi T3 Update Feed
+          prerelease: false
+          make_latest: "false"
+          files: release-artifacts/lingxi-nightly-meta/nightly.json
