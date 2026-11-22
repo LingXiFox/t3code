@@ -4119,11 +4119,22 @@ export default function ChatView(props: ChatViewProps) {
                   onUpdateProjectScript={updateProjectScriptStable}
                   onDeleteProjectScript={deleteProjectScriptStable}
                   usage={{
+                    environmentId: activeThread.environmentId,
                     providerInstanceId: activeProviderInstanceId,
                     model: activeUsageModel,
                     providers: providerStatuses,
                     sources: serverConfig?.usageLimitSources ?? EMPTY_USAGE_LIMIT_SOURCES,
                     contextWindow: activeContextWindow,
+                    providerTurns: serverProjection?.providerTurns ?? [],
+                    activeProviderThreadId: serverProjection?.thread.activeProviderThreadId ?? null,
+                    items: (serverVisibleTurnItems ?? []).map((entry) => entry.item),
+                    turnCount: serverProjection?.providerTurns.length ?? 0,
+                    isWorking,
+                    isCompacting,
+                    hasError: threadSyncError !== null,
+                    ...(isServerThread && manualCompactionProviderAvailable && !isWorking
+                      ? { onCompactContext: onComposerCompactContextStable }
+                      : {}),
                   }}
                 />
 

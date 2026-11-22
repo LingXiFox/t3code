@@ -322,11 +322,36 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 />
               ) : null}
 
-              {visible.usage ? <ThreadDetailsUsage {...props.usage} /> : null}
-
-              {visible.context && props.usage.contextWindow ? (
-                <ThreadDetailsContext usage={props.usage.contextWindow} />
+              {visible.context ? (
+                <ThreadDetailsContext
+                  usage={props.usage.contextWindow}
+                  {...(props.usage.providerTurns
+                    ? { providerTurns: props.usage.providerTurns }
+                    : {})}
+                  {...(props.usage.activeProviderThreadId !== undefined
+                    ? { activeProviderThreadId: props.usage.activeProviderThreadId }
+                    : {})}
+                  {...(props.usage.items ? { items: props.usage.items } : {})}
+                  {...(props.usage.turnCount !== undefined
+                    ? { turnCount: props.usage.turnCount }
+                    : {})}
+                  {...(props.usage.isWorking !== undefined
+                    ? { isWorking: props.usage.isWorking }
+                    : {})}
+                  {...(props.usage.isCompacting !== undefined
+                    ? { isCompacting: props.usage.isCompacting }
+                    : {})}
+                  {...(props.usage.hasError !== undefined
+                    ? { hasError: props.usage.hasError }
+                    : {})}
+                  modelId={props.usage.model}
+                  {...(props.usage.onCompactContext
+                    ? { onCompactContext: props.usage.onCompactContext }
+                    : {})}
+                />
               ) : null}
+
+              {visible.usage ? <ThreadDetailsUsage {...props.usage} /> : null}
 
               {/* Shown only when no section above has content, so an emptied card can be refilled. */}
               <div className="p-2 group-has-[>section>:last-child:not(:empty)]/details-items:hidden">
