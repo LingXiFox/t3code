@@ -1481,33 +1481,35 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     ),
   );
 
-  it.effect("packages the macOS preview's PR bundle as untrusted", () =>
+  it.effect("routes both nightly and stable release workflows through lingxi-build-desktop", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const workflow = yield* fs.readFileString(
-        yield* path.fromFileUrl(
-          new URL("../.github/workflows/desktop-macos-preview-publish.yml", import.meta.url),
-        ),
-      );
-      const { jobs } = yield* Schema.decodeEffect(
-        fromYaml(
-          Schema.Struct({
-            jobs: Schema.Record(
-              Schema.String,
-              Schema.Struct({
-                uses: Schema.optional(Schema.String),
-                with: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
-              }),
-            ),
-          }),
-        ),
-      )(workflow);
-      const packaging = Object.values(jobs).filter(
-        (job) => job.uses === "./.github/workflows/release-desktop.yml",
-      );
-      assert.isNotEmpty(packaging);
-      for (const job of packaging) assert.strictEqual(job.with?.untrusted_bundle, true);
+      for (const workflowFile of ["lingxi-nightly.yml", "lingxi-stable.yml"]) {
+        const workflow = yield* fs.readFileString(
+          yield* path.fromFileUrl(new URL(`../.github/workflows/${workflowFile}`, import.meta.url)),
+        );
+        const { jobs } = yield* Schema.decodeEffect(
+          fromYaml(
+            Schema.Struct({
+              jobs: Schema.Record(
+                Schema.String,
+                Schema.Struct({
+                  uses: Schema.optional(Schema.String),
+                  with: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+                }),
+              ),
+            }),
+          ),
+        )(workflow);
+        const releaseJob = jobs.release;
+        assert.isDefined(releaseJob);
+        assert.strictEqual(releaseJob.uses, "./.github/workflows/lingxi-build-desktop.yml");
+        assert.isDefined(releaseJob.with?.commit_sha);
+        assert.isDefined(releaseJob.with?.version);
+        assert.isDefined(releaseJob.with?.tag);
+        assert.isDefined(releaseJob.with?.channel);
+      }
     }),
   );
 
