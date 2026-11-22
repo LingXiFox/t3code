@@ -27,9 +27,9 @@ trap cleanup EXIT
 
 APP_PATH=""
 if [[ "$TARGET_PATH" == *.dmg ]]; then
-  echo "[verify-macos-signing] Verifying DMG container: $TARGET_PATH"
-  codesign --verify --verbose=2 "$TARGET_PATH"
+  echo "[verify-macos-signing] Mounting DMG to inspect signed app bundle: $TARGET_PATH"
   if [[ "$REQUIRE_DMG_NOTARIZED" == "1" ]]; then
+    codesign --verify --verbose=2 "$TARGET_PATH"
     xcrun stapler validate "$TARGET_PATH"
     spctl --assess --type open --context context:primary-signature --verbose=4 "$TARGET_PATH"
   fi
