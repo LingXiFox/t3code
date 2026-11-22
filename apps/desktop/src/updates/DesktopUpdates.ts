@@ -71,8 +71,24 @@ interface DesktopPreparedUpdateInstallResult extends DesktopUpdateActionResult {
   readonly failed: boolean;
 }
 
+const FORK_UPDATE_REPOSITORY = "LingXiFox/t3code";
+
 const AppUpdateYmlConfig = Schema.Record(Schema.String, Schema.String);
 type AppUpdateYmlConfig = typeof AppUpdateYmlConfig.Type;
+
+const AppPackageUpdateMetadata = Schema.Struct({
+  lingxiUnsignedMacBuild: Schema.optional(Schema.Boolean),
+});
+const decodeAppPackageUpdateMetadata = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(AppPackageUpdateMetadata),
+);
+
+function isAllowedUpdateFeedConfig(config: AppUpdateYmlConfig): boolean {
+  if (config.provider?.toLowerCase() !== "github") return true;
+  const owner = config.owner?.trim() ?? "";
+  const repo = config.repo?.trim() ?? "";
+  return `${owner}/${repo}`.toLowerCase() === FORK_UPDATE_REPOSITORY.toLowerCase();
+}
 
 const UpdateInfo = Schema.Struct({
   version: Schema.String,
@@ -349,9 +365,14 @@ function getAutoUpdateDisabledReason(args: {
   isDebPackage: boolean;
   disabledByEnv: boolean;
   hasUpdateFeedConfig: boolean;
+  disallowedUpdateFeedRepository: boolean;
+  unsignedMacBuild: boolean;
 }): string | null {
   if (args.policy.mode === "off") {
     return args.policy.message ?? "Updates are turned off on this machine.";
+  }
+  if (args.disallowedUpdateFeedRepository) {
+    return `Automatic updates are disabled because the configured GitHub update repository is not ${FORK_UPDATE_REPOSITORY}.`;
   }
   if (!args.hasUpdateFeedConfig) {
     return "Automatic updates are not available because no update feed is configured.";
@@ -361,6 +382,9 @@ function getAutoUpdateDisabledReason(args: {
   }
   if (args.disabledByEnv) {
     return "Automatic updates are disabled by the T3CODE_DISABLE_AUTO_UPDATE setting.";
+  }
+  if (args.platform === "darwin" && args.unsignedMacBuild) {
+    return "Automatic updates are disabled in unsigned macOS builds until code signing and notarization are configured.";
   }
   if (args.platform === "linux" && !args.appImage && !args.isDebPackage) {
     return "Automatic updates on Linux require the AppImage or the .deb package.";
@@ -460,6 +484,17 @@ export const make = Effect.gen(function* () {
     ),
   );
 
+  const readIsUnsignedMacBuild =
+    environment.platform === "darwin" && environment.isPackaged && !mockUpdates
+      ? fileSystem
+          .readFileString(environment.path.join(environment.appRoot, "package.json"), "utf-8")
+          .pipe(
+            Effect.flatMap(decodeAppPackageUpdateMetadata),
+            Effect.map((parsed) => parsed.lingxiUnsignedMacBuild === true),
+            Effect.orElseSucceed(() => false),
+          )
+      : Effect.succeed(false);
+
   // electron-updater uses this marker to install .deb updates with dpkg.
   const isDebPackage =
     environment.platform === "linux" && environment.isPackaged
@@ -479,7 +514,14 @@ export const make = Effect.gen(function* () {
   );
 
   const resolveDisabledReason = Effect.gen(function* () {
+    const appUpdateYmlConfig = yield* Ref.get(appUpdateYmlConfigRef);
     const hasFeedConfig = yield* hasUpdateFeedConfig;
+    const disallowedUpdateFeedRepository =
+      !mockUpdates &&
+      policy.feedUrl === undefined &&
+      Option.isSome(appUpdateYmlConfig) &&
+      !isAllowedUpdateFeedConfig(appUpdateYmlConfig.value);
+    const unsignedMacBuild = yield* readIsUnsignedMacBuild;
     return Option.fromNullishOr(
       getAutoUpdateDisabledReason({
         policy,
@@ -490,6 +532,8 @@ export const make = Effect.gen(function* () {
         isDebPackage,
         disabledByEnv: config.disableAutoUpdate,
         hasUpdateFeedConfig: hasFeedConfig,
+        disallowedUpdateFeedRepository,
+        unsignedMacBuild,
       }),
     );
   });
