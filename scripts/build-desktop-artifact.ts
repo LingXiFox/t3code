@@ -1078,6 +1078,15 @@ export function resolveWindowsServerAsarIgnoreGlobs(arch: typeof BuildArch.Type)
 }
 
 export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 80;
+// Windows x64 bundles x64-only native packages (@cursor/sdk-win32-x64,
+// @transcribe-cpp/win32-x64-cpu-vulkan, and ia32 ffi-rs) that are absent on arm64.
+export const WINDOWS_X64_PACKAGED_PAYLOAD_FILE_LIMIT = 110;
+
+export function resolveWindowsPackagedPayloadFileLimit(targetArch: typeof BuildArch.Type): number {
+  return targetArch === "x64"
+    ? WINDOWS_X64_PACKAGED_PAYLOAD_FILE_LIMIT
+    : WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT;
+}
 export const WINDOWS_SERVER_RESOURCE_SOURCE_DIR = "apps/desktop/prod-resources/windows-server";
 export const WINDOWS_SERVER_EXTRA_RESOURCES = [
   {
@@ -3437,7 +3446,7 @@ export const validateWindowsPackagedPayload = Effect.fn(
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const fileLimit = input.fileLimit ?? WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT;
+  const fileLimit = input.fileLimit ?? resolveWindowsPackagedPayloadFileLimit(input.targetArch);
   const isFile = (filePath: string) =>
     fs.stat(filePath).pipe(
       Effect.map((stat) => stat.type === "File"),

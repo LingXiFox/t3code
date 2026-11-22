@@ -60,8 +60,10 @@ import {
   WindowsPrimaryNativeProbeError,
   WindowsDesktopBuildPrerequisitesMissingError,
   WindowsPackagedPayloadValidationError,
+  resolveWindowsPackagedPayloadFileLimit,
   stageCursorSdkPlatformPackages,
   WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT,
+  WINDOWS_X64_PACKAGED_PAYLOAD_FILE_LIMIT,
   WINDOWS_SERVER_ASAR_IGNORE_GLOBS,
   WINDOWS_SERVER_ASAR_RESOURCE,
   WSL_RUNTIME_ARCHIVE_EXTRA_RESOURCE,
@@ -1414,6 +1416,68 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.isAbove(error.fileCount ?? 0, 2);
       }),
     ),
+  );
+
+  it.effect("applies arch-aware Windows payload file budgets (80 for arm64, 110 for x64)", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        assert.equal(resolveWindowsPackagedPayloadFileLimit("arm64"), 80);
+        assert.equal(resolveWindowsPackagedPayloadFileLimit("x64"), 110);
+        assert.equal(WINDOWS_X64_PACKAGED_PAYLOAD_FILE_LIMIT, 110);
+
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const fixture = yield* makeWindowsPayloadFixture({ copyUnpackedNatives: true });
+        const resourcesDir = path.join(fixture.packagedAppDir, "resources");
+
+        // Populate up to 97 total files in the packaged app directory.
+        const currentCount = (yield* validateWindowsPackagedPayload({
+          stageDistDir: fixture.stageDistDir,
+          appExecutableName: fixture.appExecutableName,
+          targetArch: "x64",
+          appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+        })).fileCount;
+        const extraDir = path.join(resourcesDir, "x64-extra");
+        yield* fs.makeDirectory(extraDir, { recursive: true });
+        for (let i = currentCount; i < 97; i += 1) {
+          yield* fs.writeFileString(path.join(extraDir, `extra-${String(i)}.dll`), "stub");
+        }
+
+        const x64Result = yield* validateWindowsPackagedPayload({
+          stageDistDir: fixture.stageDistDir,
+          appExecutableName: fixture.appExecutableName,
+          targetArch: "x64",
+          appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+        });
+        assert.equal(x64Result.fileCount, 97);
+
+        const arm64Error = yield* validateWindowsPackagedPayload({
+          stageDistDir: fixture.stageDistDir,
+          appExecutableName: fixture.appExecutableName,
+          targetArch: "arm64",
+          appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+        }).pipe(Effect.flip);
+        assert.instanceOf(arm64Error, WindowsPackagedPayloadValidationError);
+        assert.equal(arm64Error.reason, "file-limit-exceeded");
+        assert.equal(arm64Error.fileCount, 97);
+        assert.equal(arm64Error.fileLimit, 80);
+
+        // Pushing past 110 files must still fail on x64.
+        for (let i = 97; i < 111; i += 1) {
+          yield* fs.writeFileString(path.join(extraDir, `extra-${String(i)}.dll`), "stub");
+        }
+        const x64Exceeded = yield* validateWindowsPackagedPayload({
+          stageDistDir: fixture.stageDistDir,
+          appExecutableName: fixture.appExecutableName,
+          targetArch: "x64",
+          appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+        }).pipe(Effect.flip);
+        assert.instanceOf(x64Exceeded, WindowsPackagedPayloadValidationError);
+        assert.equal(x64Exceeded.reason, "file-limit-exceeded");
+        assert.equal(x64Exceeded.fileCount, 111);
+        assert.equal(x64Exceeded.fileLimit, 110);
+      }),
+    ).pipe(Effect.provideService(HostProcess.Platform, "linux")),
   );
 
   it.effect("rejects a sidecar whose extracted server bundle cannot resolve", () =>
