@@ -34,10 +34,36 @@ import { m } from "./i18n/messages";
 import { appAtomRegistry, subscribeAtomChanges } from "./rpc/atomRegistry";
 import { applyThemeBackground } from "./themeBackground";
 import { applyThemeCss } from "./themeCss";
+import {
+  LINGXI_BUILT_IN_THEMES,
+  LINGXI_DEFAULT_THEME_ID,
+  LINGXI_NIGHT_SKY_THEME,
+  LINGXI_RESERVED_THEME_IDS,
+} from "./themes/lingxi";
 import { themeServerEnvironmentThemesAtom } from "./state/server";
 
-export { EMBER_THEME, GROVE_THEME, IRIS_THEME, OCEAN_THEME, T3_CHAT_THEME, THEME_COLOR_ROLES };
+export {
+  EMBER_THEME,
+  GROVE_THEME,
+  IRIS_THEME,
+  LINGXI_BUILT_IN_THEMES,
+  LINGXI_DEFAULT_THEME_ID,
+  LINGXI_NIGHT_SKY_THEME,
+  OCEAN_THEME,
+  T3_CHAT_THEME,
+  THEME_COLOR_ROLES,
+};
 export type { ThemeAppearance, ThemeColorRole, ThemeColors, ThemeDefinition, ThemeVariants };
+
+export const ALL_BUILT_IN_THEMES: ReadonlyArray<ThemeDefinition> = [
+  ...LINGXI_BUILT_IN_THEMES,
+  ...BUILT_IN_THEMES,
+];
+
+const ALL_RESERVED_THEME_IDS: ReadonlySet<string> = new Set([
+  ...RESERVED_THEME_IDS,
+  ...LINGXI_RESERVED_THEME_IDS,
+]);
 
 const T3_CHAT_THEME_ID = "t3-chat" as const;
 const GROVE_THEME_ID = "grove" as const;
@@ -178,7 +204,7 @@ function parseStoredThemeVariants(
 
 function parseStoredTheme(value: unknown): ThemeDefinition | null {
   if (!isRecord(value)) return null;
-  if (!isThemeId(value.id) || RESERVED_THEME_IDS.has(value.id)) return null;
+  if (!isThemeId(value.id) || ALL_RESERVED_THEME_IDS.has(value.id)) return null;
   if (!isThemeLabel(value.label) || !isThemeAppearance(value.appearance)) return null;
   const colors = parseStoredThemeColors(value.colors, value.appearance);
   if (!colors) return null;
@@ -370,7 +396,7 @@ function getEnvironmentThemes(): ReadonlyArray<ThemeDefinition> {
 }
 
 export function isReservedThemeId(themeId: string): boolean {
-  return RESERVED_THEME_IDS.has(themeId);
+  return ALL_RESERVED_THEME_IDS.has(themeId);
 }
 
 export function getStoredCustomThemeCollection(
@@ -1226,7 +1252,7 @@ export function updateThemeColorFamily(
   }
 }
 
-const BUILT_IN_THEME_DEFINITIONS: ReadonlyArray<ThemeDefinition> = BUILT_IN_THEMES;
+const BUILT_IN_THEME_DEFINITIONS: ReadonlyArray<ThemeDefinition> = ALL_BUILT_IN_THEMES;
 
 export function getThemeDefinition(theme: ThemePreference): ThemeDefinition | null {
   const themeId = themeIdFromPreference(theme);
@@ -1370,7 +1396,7 @@ function storedThemeHasCollectionId(storedTheme: unknown, collectionId: string):
 }
 
 export function installCustomTheme(theme: ThemeDefinition): ThemeDefinition {
-  if (RESERVED_THEME_IDS.has(theme.id)) {
+  if (ALL_RESERVED_THEME_IDS.has(theme.id)) {
     throw new Error(m(msg('The theme id "{id}" is reserved.', { id: theme.id })));
   }
   const library = getWritableCustomThemeLibrary();
@@ -1389,7 +1415,7 @@ export function installCustomTheme(theme: ThemeDefinition): ThemeDefinition {
 }
 
 export function updateCustomTheme(theme: ThemeDefinition): ThemeDefinition {
-  if (RESERVED_THEME_IDS.has(theme.id)) {
+  if (ALL_RESERVED_THEME_IDS.has(theme.id)) {
     throw new Error(m(msg('The theme id "{id}" is reserved.', { id: theme.id })));
   }
 
@@ -1455,7 +1481,7 @@ export function replaceCustomThemeCollection(
     }
   }
   const conflictingTheme = replacement.find(
-    (theme) => RESERVED_THEME_IDS.has(theme.id) || occupiedIds.has(theme.id),
+    (theme) => ALL_RESERVED_THEME_IDS.has(theme.id) || occupiedIds.has(theme.id),
   );
   if (conflictingTheme) {
     throw new Error(
@@ -1561,7 +1587,7 @@ export function parseThemeFile(value: unknown): ThemeDefinition {
   if (!isThemeId(id)) {
     throw new Error(m(msg("Theme ids may only contain lowercase letters, numbers, and hyphens.")));
   }
-  if (RESERVED_THEME_IDS.has(id)) {
+  if (ALL_RESERVED_THEME_IDS.has(id)) {
     throw new Error(m(msg('The theme id "{id}" is reserved.', { id })));
   }
 
