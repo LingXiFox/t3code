@@ -14,12 +14,15 @@ import type * as EffectAcpSchema from "effect-acp/compat";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import {
+  antigravityModelOptionDescriptors,
   applyAntigravityAcpModelSelection,
   antigravityClientInfo,
   antigravityPermissionDisposition,
   antigravitySessionMeta,
   antigravitySessionMode,
   buildAntigravityPrompt,
+  detectAntigravityOrchestratorCapabilities,
+  isAntigravityOrchestratorModel,
 } from "./AntigravityAcpSupport.ts";
 
 const modelConfig = {
@@ -720,4 +723,99 @@ it.layer(NodeServices.layer)("buildAntigravityPrompt", (it) => {
       });
     }),
   );
+});
+
+describe("Antigravity Orchestrator ACP capabilities (agy 1.5.14)", () => {
+  const neonThoughtLevelOption = {
+    id: "thought_level",
+    name: "Thought Level",
+    category: "thought_level",
+    type: "select",
+    currentValue: "high",
+    options: [
+      { value: "low", name: "Low" },
+      { value: "medium", name: "Medium" },
+      { value: "high", name: "High" },
+      { value: "xhigh", name: "Extra" },
+    ],
+  } satisfies EffectAcpSchema.SessionConfigOption;
+
+  const orchestratorModelOption = {
+    id: "model",
+    name: "Model",
+    category: "model",
+    type: "select",
+    currentValue: "gemini-pro-orchestrator-neon",
+    options: [
+      { value: "gemini-4-neon", name: "Gemini 4 Neon" },
+      { value: "gemini-pro-orchestrator-neon", name: "Orchestrator (Neon)" },
+      { value: "gemini-pro-orchestrator-g1-pro", name: "Orchestrator (Argon)" },
+    ],
+  } satisfies EffectAcpSchema.SessionConfigOption;
+
+  const modeOption = {
+    id: "mode",
+    name: "Mode",
+    category: "mode",
+    type: "select",
+    currentValue: "default",
+    options: [
+      { value: "default", name: "Default" },
+      { value: "accept-edits", name: "Accept Edits" },
+      { value: "auto", name: "Auto" },
+      { value: "plan", name: "Plan" },
+    ],
+  } satisfies EffectAcpSchema.SessionConfigOption;
+
+  it("recognizes native Orchestrator presets and reports managed fixed config in agy 1.5.14", () => {
+    expect(isAntigravityOrchestratorModel("gemini-pro-orchestrator-neon")).toBe(true);
+    expect(isAntigravityOrchestratorModel("gemini-pro-orchestrator-g1-pro")).toBe(true);
+    expect(isAntigravityOrchestratorModel("gemini-4-neon")).toBe(false);
+
+    const caps = detectAntigravityOrchestratorCapabilities([orchestratorModelOption, modeOption]);
+    expect(caps).toEqual({
+      isOrchestratorActive: true,
+      currentModelId: "gemini-pro-orchestrator-neon",
+      hasThoughtLevel: false,
+      dualRoleOptionIds: [],
+    });
+    expect(antigravityModelOptionDescriptors([orchestratorModelOption, modeOption])).toEqual([]);
+  });
+
+  it("surfaces future agent-advertised Planner/Executor options automatically without UI hacks", () => {
+    const futureConfigOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> = [
+      orchestratorModelOption,
+      modeOption,
+      neonThoughtLevelOption,
+      {
+        id: "planner_model",
+        name: "Planner model",
+        type: "select",
+        currentValue: "gemini-4-neon",
+        options: [
+          { value: "gemini-4-neon", name: "Gemini 4 Neon" },
+          { value: "gemini-4-argon", name: "Gemini 4 Argon" },
+        ],
+      },
+      {
+        id: "executor_thought_level",
+        name: "Executor thinking",
+        type: "select",
+        currentValue: "medium",
+        options: [
+          { value: "low", name: "Low" },
+          { value: "medium", name: "Medium" },
+          { value: "high", name: "High" },
+        ],
+      },
+    ];
+    const caps = detectAntigravityOrchestratorCapabilities(futureConfigOptions);
+    expect(caps.dualRoleOptionIds).toEqual(["planner_model", "executor_thought_level"]);
+    const descriptors = antigravityModelOptionDescriptors(futureConfigOptions);
+    expect(descriptors.map((descriptor) => descriptor.id)).toEqual([
+      "thought_level",
+      "planner_model",
+      "executor_thought_level",
+    ]);
+  });
 });

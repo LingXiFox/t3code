@@ -933,3 +933,69 @@ it.layer(makeLayerTest(true))("Antigravity periodic health checks", (it) => {
     }),
   );
 });
+
+describe("Antigravity Orchestrator model capabilities", () => {
+  it("does not inherit stale thought_level from Gemini 4 Neon onto unobserved Orchestrator presets", () => {
+    const models = buildAntigravityModelsFromSession({
+      models: null,
+      configOptions: [
+        {
+          id: "model",
+          name: "Model",
+          category: "model",
+          type: "select",
+          currentValue: "gemini-4-neon",
+          options: [
+            { value: "gemini-4-neon", name: "Gemini 4 Neon" },
+            { value: "gemini-pro-orchestrator-neon", name: "Orchestrator (Neon)" },
+            { value: "gemini-pro-orchestrator-g1-pro", name: "Orchestrator (Argon)" },
+          ],
+        },
+        {
+          id: "thought_level",
+          name: "Thought Level",
+          category: "thought_level",
+          type: "select",
+          currentValue: "high",
+          options: [
+            { value: "low", name: "Low" },
+            { value: "medium", name: "Medium" },
+            { value: "high", name: "High" },
+            { value: "xhigh", name: "Extra" },
+          ],
+        },
+      ],
+    });
+
+    const neon = models.find((m) => m.slug === "gemini-4-neon");
+    const orchNeon = models.find((m) => m.slug === "gemini-pro-orchestrator-neon");
+    const orchArgon = models.find((m) => m.slug === "gemini-pro-orchestrator-g1-pro");
+    expect(neon?.capabilities?.optionDescriptors?.length).toBe(1);
+    expect(orchNeon?.capabilities?.optionDescriptors).toEqual([]);
+    expect(orchArgon?.capabilities?.optionDescriptors).toEqual([]);
+  });
+
+  it("passes through future dual-role Planner/Executor options advertised by agy acp", () => {
+    const models = buildAntigravityModelsFromSession({
+      models: null,
+      configOptions: [
+        {
+          id: "model",
+          name: "Model",
+          category: "model",
+          type: "select",
+          currentValue: "gemini-pro-orchestrator-neon",
+          options: [{ value: "gemini-pro-orchestrator-neon", name: "Orchestrator (Neon)" }],
+        },
+        {
+          id: "planner_model",
+          name: "Planner model",
+          type: "select",
+          currentValue: "gemini-4-neon",
+          options: [{ value: "gemini-4-neon", name: "Gemini 4 Neon" }],
+        },
+      ],
+    });
+    expect(models[0]?.capabilities?.optionDescriptors?.map((d) => d.id)).toEqual(["planner_model"]);
+  });
+});
