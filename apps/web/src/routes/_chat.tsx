@@ -2,6 +2,7 @@ import { Outlet, createFileRoute, redirect } from "@tanstack/react-router";
 
 import { ThreadRouteView } from "../components/ThreadRouteView";
 import { GlobalVoiceInputIndicator } from "../components/chat/GlobalVoiceInputIndicator";
+import { MetricsStatusBar } from "../components/metrics/MetricsStatusBar";
 import { isAppModalPage } from "../components/sidebar/mainAppLocation";
 import { SidebarInset } from "../components/ui/sidebar";
 import { resolveThreadRouteTarget } from "../threadRoutes";
@@ -13,20 +14,23 @@ function ChatRouteLayout() {
   // Render both routes here so draft promotion keeps the same ChatView mounted.
   const { shownTarget, modalOpen } = useShownThreadRouteTarget();
   return (
-    <>
-      {shownTarget?.kind === "server" && !modalOpen ? (
-        <ThreadLinkPrompt threadRef={shownTarget.threadRef} />
-      ) : null}
-      {shownTarget ? (
-        <ThreadRouteView target={shownTarget} background={modalOpen} />
-      ) : modalOpen ? (
-        <SidebarInset className="h-dvh" />
-      ) : (
-        <Outlet />
-      )}
+    <div className="flex h-dvh min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden [&_[data-slot=sidebar-inset]]:h-full! [&_[data-slot=sidebar-inset]]:min-h-0!">
+        {shownTarget?.kind === "server" && !modalOpen ? (
+          <ThreadLinkPrompt threadRef={shownTarget.threadRef} />
+        ) : null}
+        {shownTarget ? (
+          <ThreadRouteView target={shownTarget} background={modalOpen} />
+        ) : modalOpen ? (
+          <SidebarInset className="h-dvh" />
+        ) : (
+          <Outlet />
+        )}
+      </div>
+      <MetricsStatusBar hidden={modalOpen} />
       {modalOpen ? <Outlet /> : null}
       <GlobalVoiceInputIndicator hidden={modalOpen} />
-    </>
+    </div>
   );
 }
 
