@@ -6,6 +6,7 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import * as Result from "effect/Result";
 import * as TestClock from "effect/testing/TestClock";
 
+import { buildReleaseMetadataComment, buildUpdateFeedManifest } from "@t3tools/shared/cliRelease";
 import * as NpmRelease from "./npmRelease.ts";
 
 const nightlyVersion = "0.1.5-nightly.20261030.1";
@@ -173,5 +174,75 @@ it.effect.each(["--registry=https://example.com", "../other", "other-package@lat
         throw new Error("invalid specs must not trigger HTTP requests");
       });
       expect(Result.isFailure(yield* service.get({ spec }).pipe(Effect.result))).toBe(true);
+    }),
+);
+
+it.effect(
+  "decodes update-feed manifests and release metadata produced by lingxi-release-source end-to-end",
+  () =>
+    Effect.gen(function* () {
+      const nightlyManifest = buildUpdateFeedManifest({
+        version: nightlyVersion,
+        tag: `v${nightlyVersion}`,
+        channel: "nightly",
+        databaseMigration: 105,
+        releasedAt: "2026-11-22T07:30:00.000Z",
+      });
+      const latestManifest = buildUpdateFeedManifest({
+        version: stableVersion,
+        tag: `v${stableVersion}`,
+        channel: "latest",
+        databaseMigration: 105,
+        releasedAt: "2026-11-22T07:30:00.000Z",
+      });
+      const releaseMetaComment = buildReleaseMetadataComment({
+        version: nightlyVersion,
+        channel: "nightly",
+        databaseMigration: 105,
+        classification: "upstream-only",
+      });
+
+      const serviceFromFeeds = yield* makeService((url) => {
+        if (
+          url === "https://github.com/LingXiFox/t3code/releases/download/update-feed/nightly.json"
+        ) {
+          return new Response(JSON.stringify(nightlyManifest));
+        }
+        if (
+          url === "https://github.com/LingXiFox/t3code/releases/download/update-feed/latest.json"
+        ) {
+          return new Response(JSON.stringify(latestManifest));
+        }
+        return new Response("{}", { status: 404 });
+      });
+
+      expect(yield* serviceFromFeeds.get({ spec: "nightly" })).toEqual({
+        version: nightlyVersion,
+        databaseMigration: 105,
+      });
+      expect(yield* serviceFromFeeds.get({ spec: "latest" })).toEqual({
+        version: stableVersion,
+        databaseMigration: 105,
+      });
+
+      const serviceFromApiFallback = yield* makeService((url) => {
+        if (url === "https://api.github.com/repos/LingXiFox/t3code/releases?per_page=30") {
+          return new Response(
+            JSON.stringify([
+              {
+                tag_name: `v${nightlyVersion}`,
+                prerelease: true,
+                body: `Release notes\n\n${releaseMetaComment}\n`,
+              },
+            ]),
+          );
+        }
+        return new Response("{}", { status: 404 });
+      });
+
+      expect(yield* serviceFromApiFallback.get({ spec: "nightly" })).toEqual({
+        version: nightlyVersion,
+        databaseMigration: 105,
+      });
     }),
 );

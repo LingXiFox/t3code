@@ -163,3 +163,46 @@ export function npmReleaseDatabaseMigration(manifest: unknown): number | undefin
   return Option.getOrUndefined(decodeNpmReleaseMigrationManifest(manifest))?.t3code
     .databaseMigration;
 }
+
+export function buildReleaseMetadataComment(options: {
+  readonly version: string;
+  readonly channel: "nightly" | "latest";
+  readonly databaseMigration: number;
+  readonly classification: "upstream-only" | "local-only" | "mixed" | "no-change";
+  readonly repository?: string;
+}): string {
+  const payload = {
+    version: options.version,
+    channel: options.channel,
+    databaseMigration: options.databaseMigration,
+    classification: options.classification,
+    repository: options.repository ?? CLI_RELEASE_REPOSITORY,
+  };
+  return `<!-- lingxi-t3-release-meta: ${JSON.stringify(payload)} -->`;
+}
+
+export function buildUpdateFeedManifest(options: {
+  readonly version: string;
+  readonly tag: string;
+  readonly channel: "nightly" | "latest";
+  readonly databaseMigration: number;
+  readonly releasedAt: string;
+  readonly repository?: string;
+}): Record<string, unknown> {
+  const repository = options.repository ?? CLI_RELEASE_REPOSITORY;
+  return {
+    tag_name: options.tag,
+    draft: false,
+    prerelease: options.channel === "nightly",
+    version: options.version,
+    tag: options.tag,
+    channel: options.channel,
+    repository,
+    releaseUrl: `https://github.com/${repository}/releases/tag/${options.tag}`,
+    databaseMigration: options.databaseMigration,
+    t3code: {
+      databaseMigration: options.databaseMigration,
+    },
+    releasedAt: options.releasedAt,
+  };
+}
