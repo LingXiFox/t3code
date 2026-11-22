@@ -126,6 +126,7 @@ describe("lingxi-release-source", () => {
     });
     assert.deepStrictEqual(feed, {
       tag_name: "v0.0.48-nightly.20261122.1",
+      name: "LingXi T3 0.0.48-nightly.20261122.1",
       draft: false,
       prerelease: true,
       version: "0.0.48-nightly.20261122.1",
@@ -138,6 +139,22 @@ describe("lingxi-release-source", () => {
         databaseMigration: 42,
       },
       releasedAt: "2026-11-22T06:00:00.000Z",
+    });
+
+    const richFeed = buildUpdateFeedManifest({
+      version: "0.0.48-nightly.20261122.1",
+      tag: "v0.0.48-nightly.20261122.1",
+      channel: "nightly",
+      databaseMigration: 42,
+      releasedAt: "2026-11-22T06:00:00.000Z",
+      name: "LingXi T3 0.0.48-nightly.20261122.1",
+      body: `Release notes\n\n${comment}`,
+      commitSha: "9db4bdd8c95909d918b1d72b6e209fd801a12a8a",
+    });
+    assert.deepStrictEqual(richFeed, {
+      ...feed,
+      body: `Release notes\n\n${comment}`,
+      commitSha: "9db4bdd8c95909d918b1d72b6e209fd801a12a8a",
     });
   });
 

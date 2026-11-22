@@ -1,5 +1,6 @@
 import * as NodeModule from "node:module";
 
+import { buildUpdateFeedManifest } from "@t3tools/shared/cliRelease";
 import { GitHubProvider } from "electron-updater/out/providers/GitHubProvider.js";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -103,5 +104,51 @@ describe("GitHubProvider nightly lookup", () => {
       releaseNotes: [{ version: nightly(4606).slice(1), note: `${nightly(4606)} feed notes` }],
       apiScans: 0,
     });
+  });
+
+  it("consumes buildUpdateFeedManifest output for update-feed/nightly.json including releaseNotes", async () => {
+    const manifest = buildUpdateFeedManifest({
+      version: "0.1.10-nightly.20261112.4606",
+      tag: nightly(4606),
+      channel: "nightly",
+      databaseMigration: 105,
+      releasedAt: "2026-11-12T08:00:00.000Z",
+      name: "LingXi T3 0.1.10-nightly.20261112.4606",
+      body: "### LingXi 本地变更\n- fix(updater): include release notes in feed manifest",
+      commitSha: "0123456789abcdef0123456789abcdef01234567",
+    });
+
+    const request = async ({ path = "" }: { readonly path?: string | null }) => {
+      if (path === `${REPO}/releases.atom`) return atomFeed(crowdedFeed);
+      if (path === `${REPO}/releases/download/update-feed/nightly.json`) {
+        return JSON.stringify(manifest);
+      }
+      if (path === `${REPO}/releases/download/${nightly(4606)}/nightly.yml`) {
+        return "version: 0.1.10-nightly.20261112.4606\npath: LingXi-T3.exe\nsha512: abc\n";
+      }
+      return "[]";
+    };
+
+    const provider = new GitHubProvider(
+      { provider: "github", owner: "LingXiFox", repo: "t3code" },
+      {
+        allowPrerelease: true,
+        channel: "nightly",
+        currentVersion: semver.parse("0.1.10-nightly.20261112.4580"),
+        fullChangelog: true,
+      } as ProviderArgs[1],
+      {
+        isUseMultipleRangeRequest: false,
+        platform: "win32",
+        executor: { request },
+      } as ProviderArgs[2],
+    );
+
+    const latest = await provider.getLatestVersion();
+    expect(latest.tag).toBe(nightly(4606));
+    expect(latest.releaseName).toBe("LingXi T3 0.1.10-nightly.20261112.4606");
+    expect(latest.releaseNotes).toBe(
+      "### LingXi 本地变更\n- fix(updater): include release notes in feed manifest",
+    );
   });
 });

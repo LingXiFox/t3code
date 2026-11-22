@@ -17,6 +17,7 @@ concurrency:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   prepare-sync:
@@ -26,6 +27,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || vars.LINGXI_AUTO_SYNC_ENABLED == 'true'
     outputs:
       sync_needed: ${{ steps.sync_branch.outputs.sync_needed }}
+      manual_review_required: ${{ steps.sync_branch.outputs.manual_review_required }}
       candidate_sha: ${{ steps.sync_branch.outputs.candidate_sha }}
       lingxifox_before_sha: ${{ steps.sync_branch.outputs.lingxifox_before_sha }}
       upstream_sha: ${{ steps.mirror_main.outputs.upstream_sha }}
@@ -38,6 +40,11 @@ jobs:
           ref: lingxifox
           fetch-depth: 0
           fetch-tags: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
 
       - name: Fetch upstream pingdotgg/t3code (without upstream tags)
         run: |
@@ -55,6 +62,7 @@ jobs:
           UPSTREAM_SHA="$(git rev-parse upstream/main)"
           ORIGIN_MAIN_SHA="$(git rev-parse origin/main)"
           echo "upstream_sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+          echo "origin_main_before_sha=$ORIGIN_MAIN_SHA" >> "$GITHUB_OUTPUT"
           if [[ "$UPSTREAM_SHA" == "$ORIGIN_MAIN_SHA" ]]; then
             echo "main_updated=false" >> "$GITHUB_OUTPUT"
             echo "origin/main already matches upstream/main ($UPSTREAM_SHA)."
@@ -62,6 +70,13 @@ jobs:
           fi
           if ! git merge-base --is-ancestor "$ORIGIN_MAIN_SHA" "$UPSTREAM_SHA"; then
             echo "::error::origin/main ($ORIGIN_MAIN_SHA) has diverged from upstream/main ($UPSTREAM_SHA). Refusing non-fast-forward update."
+            {
+              echo "### Upstream Mirror Failed"
+              echo ""
+              echo "- **origin/main**: \`$ORIGIN_MAIN_SHA\`"
+              echo "- **upstream/main**: \`$UPSTREAM_SHA\`"
+              echo "- **Reason**: Non-fast-forward divergence on \`main\`."
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           echo "main_updated=true" >> "$GITHUB_OUTPUT"
@@ -71,38 +86,88 @@ jobs:
             git push origin "upstream/main:refs/heads/main"
           fi
 
-      - name: Check delta against lingxifox and prepare rebase candidate
+      - name: Check delta, rebase candidate, and evaluate upstream risk
         id: sync_branch
         run: |
+          set -euo pipefail
           BEHIND_COUNT="$(git rev-list --count origin/lingxifox..upstream/main)"
+          UPSTREAM_SHA="${{ steps.mirror_main.outputs.upstream_sha }}"
+          ORIGIN_MAIN_BEFORE_SHA="${{ steps.mirror_main.outputs.origin_main_before_sha }}"
+          LINGXIFOX_BEFORE_SHA="$(git rev-parse origin/lingxifox)"
           echo "behind_count=$BEHIND_COUNT" >> "$GITHUB_OUTPUT"
+          echo "lingxifox_before_sha=$LINGXIFOX_BEFORE_SHA" >> "$GITHUB_OUTPUT"
+
           if [[ "$BEHIND_COUNT" == "0" ]]; then
             echo "sync_needed=false" >> "$GITHUB_OUTPUT"
+            echo "manual_review_required=false" >> "$GITHUB_OUTPUT"
             echo "lingxifox already includes all upstream/main commits."
+            {
+              echo "### Upstream Sync Check"
+              echo ""
+              echo "- **Status**: Up to date (0 behind commits)"
+              echo "- **upstream/main**: \`$UPSTREAM_SHA\`"
+              echo "- **lingxifox**: \`$LINGXIFOX_BEFORE_SHA\`"
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           echo "lingxifox is behind upstream/main by $BEHIND_COUNT commits."
 
-          LINGXIFOX_BEFORE_SHA="$(git rev-parse origin/lingxifox)"
           SYNC_BRANCH="sync/upstream-rebase"
-          echo "lingxifox_before_sha=$LINGXIFOX_BEFORE_SHA" >> "$GITHUB_OUTPUT"
           echo "sync_branch=$SYNC_BRANCH" >> "$GITHUB_OUTPUT"
 
           git checkout -B "$SYNC_BRANCH" origin/lingxifox
           if ! git rebase upstream/main; then
+            CONFLICT_FILES="$(git diff --name-only --diff-filter=U || true)"
             git rebase --abort || true
-            echo "::error::Automatic rebase of lingxifox onto upstream/main conflicted. Resolve manually."
+            {
+              echo "### Upstream Sync Blocked (Rebase Conflict)"
+              echo ""
+              echo "- **Stage**: \`git rebase upstream/main\`"
+              echo "- **upstream/main**: \`$UPSTREAM_SHA\`"
+              echo "- **lingxifox (preserved)**: \`$LINGXIFOX_BEFORE_SHA\`"
+              echo "- **Conflicting files**:"
+              if [[ -n "$CONFLICT_FILES" ]]; then
+                while IFS= read -r file; do
+                  echo "  - \`$file\`"
+                done <<< "$CONFLICT_FILES"
+              else
+                echo "  - (unable to enumerate conflicted paths)"
+              fi
+              echo ""
+              echo "#### Recovery"
+              echo "1. Rebase \`lingxifox\` onto \`upstream/main\` locally and resolve conflicts carefully without dropping LingXi features."
+              echo "2. Run \`pnpm exec vp run check:changed\` and push \`lingxifox\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Automatic rebase of lingxifox onto upstream/main conflicted. Manual review required; lingxifox was left untouched."
             exit 1
           fi
 
           CANDIDATE_SHA="$(git rev-parse HEAD)"
           echo "candidate_sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
 
+          node scripts/lingxi-upstream-risk.ts \
+            --base-ref "$ORIGIN_MAIN_BEFORE_SHA" \
+            --upstream-ref upstream/main \
+            --candidate-ref HEAD \
+            --json-out risk.json \
+            --summary-out risk-summary.md
+
+          cat risk-summary.md >> "$GITHUB_STEP_SUMMARY"
+          REQUIRES_MANUAL_REVIEW="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync("risk.json", "utf8")).requiresManualReview)')"
+          echo "manual_review_required=$REQUIRES_MANUAL_REVIEW" >> "$GITHUB_OUTPUT"
+
           if [[ "${{ inputs.dry_run }}" == "true" ]]; then
             echo "[dry-run] Rebase succeeded cleanly. Rebased LingXi commits on top of upstream/main:"
             git log --oneline upstream/main..HEAD
+            echo "[dry-run] Risk requiresManualReview=$REQUIRES_MANUAL_REVIEW"
             echo "sync_needed=false" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+
+          if [[ "$REQUIRES_MANUAL_REVIEW" == "true" ]]; then
+            echo "sync_needed=false" >> "$GITHUB_OUTPUT"
+            echo "::error::Upstream sync requires manual review due to high-risk changes; lingxifox was left untouched."
+            exit 1
           fi
 
           git push --force-with-lease origin "HEAD:refs/heads/${SYNC_BRANCH}"
@@ -115,6 +180,31 @@ jobs:
     uses: ./.github/workflows/lingxi-verify.yml
     with:
       ref: ${{ needs.prepare-sync.outputs.candidate_sha }}
+
+  cleanup-failed-candidate:
+    name: Cleanup Failed Sync Candidate
+    needs: [prepare-sync, verify-candidate]
+    if: always() && needs.prepare-sync.outputs.sync_needed == 'true' && needs.verify-candidate.result != 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Delete temporary sync branch and write summary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SYNC_BRANCH="${{ needs.prepare-sync.outputs.sync_branch }}"
+          if [[ -n "$SYNC_BRANCH" ]]; then
+            gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/${SYNC_BRANCH}" >/dev/null 2>&1 || true
+          fi
+          {
+            echo "### Upstream Sync Blocked (Candidate CI Failed)"
+            echo ""
+            echo "- **Verify Result**: \`${{ needs.verify-candidate.result }}\`"
+            echo "- **Candidate SHA**: \`${{ needs.prepare-sync.outputs.candidate_sha }}\`"
+            echo "- **Upstream SHA**: \`${{ needs.prepare-sync.outputs.upstream_sha }}\`"
+            echo "- **lingxifox (preserved)**: \`${{ needs.prepare-sync.outputs.lingxifox_before_sha }}\`"
+            echo "- **Cleanup**: Temporary branch \`$SYNC_BRANCH\` deleted."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   apply-sync:
     name: Fast-Forward lingxifox After Candidate CI
@@ -149,3 +239,26 @@ jobs:
           git push --force-with-lease="refs/heads/lingxifox:${BEFORE_SHA}" \
             origin "${CANDIDATE_SHA}:refs/heads/lingxifox"
           git push origin --delete "${SYNC_BRANCH}" || true
+
+          {
+            echo "### Upstream Sync Applied"
+            echo ""
+            echo "- **Before SHA**: \`$BEFORE_SHA\`"
+            echo "- **New lingxifox SHA**: \`$CANDIDATE_SHA\`"
+            echo "- **Upstream SHA**: \`${{ needs.prepare-sync.outputs.upstream_sha }}\`"
+            echo "- **Auto Nightly Triggered**: \`${{ vars.LINGXI_AUTO_NIGHTLY_ENABLED == 'true' }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  trigger-nightly:
+    name: Trigger Nightly Release (Verified Sync)
+    needs: [prepare-sync, verify-candidate, apply-sync]
+    if: >-
+      needs.prepare-sync.outputs.sync_needed == 'true' &&
+      inputs.dry_run != true &&
+      vars.LINGXI_AUTO_NIGHTLY_ENABLED == 'true'
+    uses: ./.github/workflows/lingxi-nightly.yml
+    with:
+      target_sha: ${{ needs.prepare-sync.outputs.candidate_sha }}
+      force_publish: false
+      caller_verified: true
+    secrets: inherit
