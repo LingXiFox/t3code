@@ -1504,3 +1504,65 @@ describe("DesktopUpdates under a managed policy", () => {
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 });
+
+describe("DesktopUpdates fork release isolation", () => {
+  it.effect("disables automatic updates when app-update.yml points to pingdotgg/t3code", () => {
+    const harness = makeHarness({
+      env: { T3CODE_DESKTOP_MOCK_UPDATES: "false" },
+      appUpdateYml: "provider: github\nowner: pingdotgg\nrepo: t3code\n",
+    });
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        const state = yield* updates.getState;
+        assert.isFalse(state.enabled);
+        assert.equal(state.status, "disabled");
+        assert.include(state.message ?? "", "LingXiFox/t3code");
+        assert.isFalse((yield* updates.check("menu")).checked);
+        assert.equal(harness.checkCount(), 0);
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
+  it.effect("disables automatic updates on unsigned macOS builds", () => {
+    const harness = makeHarness({
+      platform: "darwin",
+      env: { T3CODE_DESKTOP_MOCK_UPDATES: "false" },
+      appUpdateYml: "provider: github\nowner: LingXiFox\nrepo: t3code\n",
+      appPackageJson: JSON.stringify({ lingxiUnsignedMacBuild: true }),
+    });
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        const state = yield* updates.getState;
+        assert.isFalse(state.enabled);
+        assert.equal(state.status, "disabled");
+        assert.include(state.message ?? "", "unsigned macOS builds");
+        assert.equal(harness.checkCount(), 0);
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
+  it.effect("enables automatic updates for signed LingXiFox/t3code feeds", () => {
+    const harness = makeHarness({
+      platform: "darwin",
+      env: { T3CODE_DESKTOP_MOCK_UPDATES: "false" },
+      appUpdateYml: "provider: github\nowner: LingXiFox\nrepo: t3code\n",
+      appPackageJson: JSON.stringify({}),
+    });
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        const state = yield* updates.getState;
+        assert.isTrue(state.enabled);
+        assert.equal(state.status, "idle");
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+});
