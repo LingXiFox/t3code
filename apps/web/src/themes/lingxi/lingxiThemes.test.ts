@@ -58,7 +58,8 @@ describe("LingXi built-in theme system", () => {
     expect(css.length).toBeLessThanOrEqual(20_000);
     expect(css.length).toBeLessThanOrEqual(THEME_CSS_MAX_LENGTH);
     expect(themeCssLoadsRemoteFiles(css)).toBe(false);
-    expect(css).toContain('content:"LINGXIFOX"');
+    expect(css).toContain('url("data:image/webp;base64,');
+    expect(css).not.toContain('content:"LINGXIFOX"');
     expect(css).not.toContain('content:"T3"');
     expect(css).not.toContain("content:'T3'");
     expect(css).toContain("[data-sidebar-row]");
