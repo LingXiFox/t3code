@@ -167,22 +167,47 @@ export function resolveStableVersionFromNightly(nightlyTagOrVersion: string): {
 }
 
 export function computeStablePatchId(repoRoot: string, sha: string): string | null {
-  const diff = NodeChildProcess.execFileSync("git", ["show", "--format=", "--patch", sha], {
-    cwd: repoRoot,
-    encoding: "utf8",
-    maxBuffer: 32 * 1024 * 1024,
-  });
-  if (diff.trim().length === 0) {
-    return null;
-  }
-  const output = NodeChildProcess.execFileSync("git", ["patch-id", "--stable"], {
-    cwd: repoRoot,
-    input: diff,
-    encoding: "utf8",
-    maxBuffer: 8 * 1024 * 1024,
-  }).trim();
+  const output = NodeChildProcess.execFileSync(
+    "sh",
+    ["-c", 'git show --format="commit %H" --patch "$1" | git patch-id --stable', "_", sha],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024,
+    },
+  ).trim();
   const patchId = output.split(/\s+/u)[0] ?? "";
   return patchId.length > 0 ? patchId : null;
+}
+
+export function computeStablePatchIdMap(
+  repoRoot: string,
+  range: string,
+): ReadonlyMap<string, string> {
+  const output = NodeChildProcess.execFileSync(
+    "sh",
+    [
+      "-c",
+      'git log --no-merges --format="commit %H" --patch "$1" | git patch-id --stable',
+      "_",
+      range,
+    ],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024,
+    },
+  );
+  const patchIds = new Map<string, string>();
+  for (const line of output.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const [patchId, commitSha] = trimmed.split(/\s+/u);
+    if (patchId && commitSha) {
+      patchIds.set(commitSha, patchId);
+    }
+  }
+  return patchIds;
 }
 
 export function listCommitsWithPatchIds(
@@ -193,6 +218,7 @@ export function listCommitsWithPatchIds(
   if (raw.trim().length === 0) {
     return [];
   }
+  const patchIds = computeStablePatchIdMap(repoRoot, range);
   return raw
     .split(/\r?\n/u)
     .filter((line) => line.length > 0)
@@ -203,7 +229,7 @@ export function listCommitsWithPatchIds(
       return {
         sha,
         subject,
-        patchId: computeStablePatchId(repoRoot, sha),
+        patchId: patchIds.get(sha) ?? null,
       };
     });
 }
@@ -344,27 +370,19 @@ export function classifyRepositoryChanges(options: {
   const baseTag =
     options.baseTag !== undefined ? options.baseTag : resolveLatestNightlyTag(allTags);
 
-  const range = baseTag ? `${baseTag}..${headSha}` : headSha;
+  const bootstrapBase = baseTag ?? runGit(repoRoot, ["merge-base", headSha, upstreamRef]);
+  const range = `${bootstrapBase}..${headSha}`;
   const releaseCommits = listCommitsWithPatchIds(repoRoot, range);
 
-  // Only inspect upstream commits reachable after the merge-base with baseTag (or recent 300 commits on bootstrap)
-  const upstreamRange = baseTag
-    ? `${runGit(repoRoot, ["merge-base", baseTag, upstreamRef])}..${upstreamRef}`
-    : `${upstreamRef}~200..${upstreamRef}`;
+  const upstreamBase = baseTag
+    ? runGit(repoRoot, ["merge-base", baseTag, upstreamRef])
+    : bootstrapBase;
+  const upstreamRange = `${upstreamBase}..${upstreamRef}`;
 
-  let upstreamPatchIds = new Set<string>();
-  try {
-    const upstreamCommits = listCommitsWithPatchIds(repoRoot, upstreamRange);
-    upstreamPatchIds = new Set(
-      upstreamCommits.map((commit) => commit.patchId).filter((id): id is string => id !== null),
-    );
-  } catch {
-    // Fallback if repo is shallow and upstreamRef~200 does not exist
-    const upstreamCommits = listCommitsWithPatchIds(repoRoot, upstreamRef);
-    upstreamPatchIds = new Set(
-      upstreamCommits.map((commit) => commit.patchId).filter((id): id is string => id !== null),
-    );
-  }
+  const upstreamCommits = listCommitsWithPatchIds(repoRoot, upstreamRange);
+  const upstreamPatchIds = new Set(
+    upstreamCommits.map((commit) => commit.patchId).filter((id): id is string => id !== null),
+  );
 
   return classifyPatchSets({
     baseTag,
