@@ -6,6 +6,7 @@ import { CONTEXT_CHIP_ACCENTS, contextChipColorVariable } from "./lib/contextChi
 import { appAtomRegistry } from "./rpc/atomRegistry";
 
 import {
+  ALL_BUILT_IN_THEMES,
   applyThemePalette,
   canonicalThemePreference,
   contextChipVariables,
@@ -87,7 +88,10 @@ describe("theme files", () => {
     const palettes = [
       getStandardThemeColors("light"),
       getStandardThemeColors("dark"),
-      ...BUILT_IN_THEMES.flatMap((theme) => [theme.colors, ...Object.values(theme.variants ?? {})]),
+      ...ALL_BUILT_IN_THEMES.flatMap((theme) => [
+        theme.colors,
+        ...Object.values(theme.variants ?? {}),
+      ]),
     ];
     for (const colors of palettes) {
       expect(
