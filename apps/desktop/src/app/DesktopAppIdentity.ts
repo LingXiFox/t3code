@@ -92,9 +92,13 @@ export const make = Effect.gen(function* () {
   const configure = Effect.gen(function* () {
     const commitHash = yield* resolveAboutCommitHash;
     // Electron strips spaces but keeps parentheses in its User-Agent token, breaking Turnstile in preview sessions.
-    yield* electronApp.setName(
-      `${environment.branding.baseName} ${environment.branding.stageLabel}`,
-    );
+    const runtimeAppName =
+      environment.branding.stageLabel === "Dev"
+        ? `${environment.branding.baseName} Dev`
+        : environment.branding.stageLabel === "Nightly"
+          ? `${environment.branding.baseName} Nightly`
+          : environment.branding.baseName;
+    yield* electronApp.setName(runtimeAppName);
     yield* electronApp.setAboutPanelOptions({
       applicationName: environment.displayName,
       applicationVersion: environment.appVersion,
