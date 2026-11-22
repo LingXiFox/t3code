@@ -3,8 +3,12 @@ import {
   ServerNpmReleaseInput,
   type ServerNpmRelease,
 } from "@t3tools/contracts";
-import { npmReleaseDatabaseMigration } from "@t3tools/shared/cliRelease";
-import { resolveCommandPath } from "@t3tools/shared/shell";
+import {
+  CLI_RELEASE_REPOSITORY,
+  desktopUpdateChannelOf,
+  newestCliReleaseVersion,
+  npmReleaseDatabaseMigration,
+} from "@t3tools/shared/cliRelease";
 import * as Cache from "effect/Cache";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -12,21 +16,37 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as Semaphore from "effect/Semaphore";
-import { FetchHttpClient, HttpClient } from "effect/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
-import * as ProcessRunner from "../processRunner.ts";
+const isServerNpmReleaseError = Schema.is(ServerNpmReleaseError);
 
 const Version = Schema.String.check(Schema.isPattern(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/));
-const Manifest = Schema.Struct({ version: Version, t3code: Schema.optionalKey(Schema.Unknown) });
-// npm prints a bare version string when the release has no `t3code` field.
-const decodeManifest = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.Union([Manifest, Schema.Tuple([Manifest]), Version])),
-);
-const decodeError = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.Struct({ error: Schema.Struct({ code: Schema.String }) })),
-);
+const decodeVersion = Schema.decodeUnknownOption(Version);
 const decodeInput = Schema.decodeUnknownEffect(ServerNpmReleaseInput);
+
+const GitHubReleasePayload = Schema.Struct({
+  tag_name: Schema.String,
+  draft: Schema.optionalKey(Schema.Boolean),
+  prerelease: Schema.optionalKey(Schema.Boolean),
+  body: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  t3code: Schema.optionalKey(Schema.Unknown),
+});
+type GitHubReleasePayload = typeof GitHubReleasePayload.Type;
+
+const decodeReleasePayload = Schema.decodeUnknownOption(
+  Schema.fromJsonString(GitHubReleasePayload),
+);
+const decodeReleaseListPayload = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(GitHubReleasePayload)),
+);
+const ReleaseMetaComment = Schema.Struct({
+  databaseMigration: Schema.optionalKey(Schema.Int),
+});
+const decodeReleaseMetaComment = Schema.decodeUnknownOption(
+  Schema.fromJsonString(ReleaseMetaComment),
+);
+
+const RELEASE_META_COMMENT_RE = /<!--\s*lingxi-t3-release-meta:\s*(\{[\s\S]*?\})\s*-->/;
 
 export class NpmRelease extends Context.Service<
   NpmRelease,
@@ -37,84 +57,143 @@ export class NpmRelease extends Context.Service<
   }
 >()("t3/cloud/npmRelease") {}
 
-function toRelease(spec: string, json: string) {
-  const decoded = Option.getOrUndefined(decodeManifest(json));
-  const manifest =
-    typeof decoded === "string"
-      ? { version: decoded }
-      : decoded && ("version" in decoded ? decoded : decoded[0]);
-  if (!manifest || (spec !== "latest" && spec !== "nightly" && manifest.version !== spec)) {
-    return Effect.fail(
-      new ServerNpmReleaseError({ reason: "npm returned invalid release metadata." }),
-    );
-  }
-  const databaseMigration = npmReleaseDatabaseMigration(manifest);
-  return Effect.succeed({
-    version: manifest.version,
+function parseReleaseVersion(tagName: string): string | undefined {
+  const normalized = tagName.trim().replace(/^v/, "");
+  return Option.getOrUndefined(decodeVersion(normalized));
+}
+
+function extractDatabaseMigration(payload: GitHubReleasePayload): number | undefined {
+  const direct = npmReleaseDatabaseMigration(payload);
+  if (direct !== undefined) return direct;
+  if (!payload.body) return undefined;
+  const match = RELEASE_META_COMMENT_RE.exec(payload.body);
+  if (!match?.[1]) return undefined;
+  return Option.getOrUndefined(decodeReleaseMetaComment(match[1]))?.databaseMigration;
+}
+
+function toServerRelease(payload: GitHubReleasePayload): ServerNpmRelease | null {
+  if (payload.draft) return null;
+  const version = parseReleaseVersion(payload.tag_name);
+  if (!version) return null;
+  const databaseMigration = extractDatabaseMigration(payload);
+  return {
+    version,
     ...(databaseMigration === undefined ? {} : { databaseMigration }),
-  });
+  };
 }
 
 export const make = Effect.fn("NpmRelease.make")(function* () {
-  const runner = yield* ProcessRunner.ProcessRunner;
   const http = yield* HttpClient.HttpClient;
-  const lookupPublic = Effect.fn("NpmRelease.lookupPublic")(function* (spec: string) {
+
+  const fetchTextOrNotFound = Effect.fn("NpmRelease.fetchTextOrNotFound")(function* (url: string) {
     const unreachable = new ServerNpmReleaseError({
-      reason: "npm is not installed and the public npm registry could not be reached.",
+      reason: `Could not reach ${CLI_RELEASE_REPOSITORY} releases on GitHub.`,
     });
-    const json = yield* Effect.gen(function* () {
-      const response = yield* http.get(`https://registry.npmjs.org/t3/${spec}`);
+    return yield* Effect.gen(function* () {
+      const request = HttpClientRequest.get(url).pipe(
+        HttpClientRequest.setHeaders({
+          Accept: "application/vnd.github+json",
+          "User-Agent": "LingXi-T3",
+        }),
+      );
+      const response = yield* http.execute(request);
       if (response.status === 404) return Option.none<string>();
-      if (response.status < 200 || response.status >= 300) return yield* unreachable;
+      if (response.status < 200 || response.status >= 300) {
+        return yield* new ServerNpmReleaseError({
+          reason: `GitHub releases lookup returned HTTP ${response.status}.`,
+        });
+      }
       return Option.some(yield* response.text);
     }).pipe(
       Effect.timeout(Duration.seconds(15)),
-      Effect.mapError(() => unreachable),
+      Effect.mapError((error) => (isServerNpmReleaseError(error) ? error : unreachable)),
     );
-    return Option.isNone(json) ? null : yield* toRelease(spec, json.value);
   });
-  // npm loads the whole package history per lookup, so a burst of specs must not spawn one each.
-  const npmPermits = yield* Semaphore.make(2);
+
+  const invalidMetadata = () =>
+    new ServerNpmReleaseError({
+      reason: `${CLI_RELEASE_REPOSITORY} returned invalid release metadata.`,
+    });
+
+  const lookupLatest = Effect.fn("NpmRelease.lookupLatest")(function* () {
+    const feedJson = yield* fetchTextOrNotFound(
+      `https://github.com/${CLI_RELEASE_REPOSITORY}/releases/download/update-feed/latest.json`,
+    );
+    if (Option.isSome(feedJson)) {
+      const payload = Option.getOrUndefined(decodeReleasePayload(feedJson.value));
+      if (!payload) return yield* invalidMetadata();
+      const release = toServerRelease(payload);
+      if (!release || payload.prerelease || desktopUpdateChannelOf(release.version) !== "latest") {
+        return yield* invalidMetadata();
+      }
+      return release;
+    }
+
+    const apiJson = yield* fetchTextOrNotFound(
+      `https://api.github.com/repos/${CLI_RELEASE_REPOSITORY}/releases/latest`,
+    );
+    if (Option.isNone(apiJson)) return null;
+    const payload = Option.getOrUndefined(decodeReleasePayload(apiJson.value));
+    if (!payload) return yield* invalidMetadata();
+    const release = toServerRelease(payload);
+    if (!release || payload.prerelease || desktopUpdateChannelOf(release.version) !== "latest") {
+      return null;
+    }
+    return release;
+  });
+
+  const lookupNightly = Effect.fn("NpmRelease.lookupNightly")(function* () {
+    const feedJson = yield* fetchTextOrNotFound(
+      `https://github.com/${CLI_RELEASE_REPOSITORY}/releases/download/update-feed/nightly.json`,
+    );
+    if (Option.isSome(feedJson)) {
+      const payload = Option.getOrUndefined(decodeReleasePayload(feedJson.value));
+      if (!payload) return yield* invalidMetadata();
+      const release = toServerRelease(payload);
+      if (!release || desktopUpdateChannelOf(release.version) !== "nightly") {
+        return yield* invalidMetadata();
+      }
+      return release;
+    }
+
+    const listJson = yield* fetchTextOrNotFound(
+      `https://api.github.com/repos/${CLI_RELEASE_REPOSITORY}/releases?per_page=30`,
+    );
+    if (Option.isNone(listJson)) return null;
+    const payloads = Option.getOrUndefined(decodeReleaseListPayload(listJson.value));
+    if (!payloads) return yield* invalidMetadata();
+    const newestVersion = newestCliReleaseVersion(payloads, "nightly");
+    if (!newestVersion) return null;
+    const matching = payloads.find(
+      (entry) => !entry.draft && parseReleaseVersion(entry.tag_name) === newestVersion,
+    );
+    return matching ? toServerRelease(matching) : { version: newestVersion };
+  });
+
+  const lookupExactVersion = Effect.fn("NpmRelease.lookupExactVersion")(function* (spec: string) {
+    const apiJson = yield* fetchTextOrNotFound(
+      `https://api.github.com/repos/${CLI_RELEASE_REPOSITORY}/releases/tags/v${spec}`,
+    );
+    if (Option.isNone(apiJson)) return null;
+    const payload = Option.getOrUndefined(decodeReleasePayload(apiJson.value));
+    if (!payload) return yield* invalidMetadata();
+    const release = toServerRelease(payload);
+    if (!release || release.version !== spec) {
+      return yield* invalidMetadata();
+    }
+    return release;
+  });
+
   const cache = yield* Cache.make({
     capacity: 32,
     timeToLive: Duration.minutes(1),
     lookup: Effect.fn("NpmRelease.lookup")(function* (spec: string) {
-      // Without npm there is no configured registry to honor, so use the public one.
-      const npmPath = yield* resolveCommandPath("npm");
-      if (npmPath === null) return yield* lookupPublic(spec);
-      const output = yield* npmPermits
-        .withPermits(1)(
-          runner.run({
-            command: npmPath,
-            // Named fields keep the output small; the full package document grows with every release.
-            args: ["view", "--global", "--json", `t3@${spec}`, "version", "t3code"],
-            timeout: Duration.seconds(15),
-            maxOutputBytes: 256 * 1024,
-          }),
-        )
-        .pipe(
-          Effect.tapError((error) =>
-            Effect.logInfo("npm release lookup failed", { tag: error._tag }),
-          ),
-          Effect.mapError(
-            () => new ServerNpmReleaseError({ reason: "npm could not complete the lookup." }),
-          ),
-        );
-      if (output.timedOut || output.stdoutTruncated || output.stdoutInvalidUtf8) {
-        return yield* new ServerNpmReleaseError({ reason: "npm returned an incomplete response." });
-      }
-      if (output.code !== 0) {
-        const error = Option.getOrUndefined(decodeError(output.stdout));
-        if (error?.error.code === "E404") return null;
-        yield* Effect.logInfo("npm release lookup failed", {
-          exitCode: output.code,
-          npmErrorCode: error?.error.code,
-        });
-        return yield* new ServerNpmReleaseError({ reason: "npm could not read release metadata." });
-      }
-      return yield* toRelease(spec, output.stdout);
+      if (spec === "latest") return yield* lookupLatest();
+      if (spec === "nightly") return yield* lookupNightly();
+      return yield* lookupExactVersion(spec);
     }),
   });
+
   return NpmRelease.of({
     get: Effect.fn("NpmRelease.get")(function* (input) {
       const { spec } = yield* decodeInput(input).pipe(
@@ -127,6 +206,4 @@ export const make = Effect.fn("NpmRelease.make")(function* () {
   });
 });
 
-export const layer = Layer.effect(NpmRelease, make()).pipe(
-  Layer.provide([ProcessRunner.layer, FetchHttpClient.layer]),
-);
+export const layer = Layer.effect(NpmRelease, make()).pipe(Layer.provide(FetchHttpClient.layer));
