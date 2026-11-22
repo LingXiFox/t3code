@@ -115,3 +115,57 @@ def encode_webp(indices: np.ndarray) -> bytes:
 def build_art_data_url(sky: Sky) -> str:
     webp = encode_webp(dither(paint_sky(sky), sky))
     return "data:image/webp;base64," + base64.b64encode(webp).decode()
+
+
+FOX_PALETTE: dict[str, tuple[int, int, int, int]] = {
+    ".": (0, 0, 0, 0),
+    "k": (26, 20, 18, 255),
+    "e": (20, 16, 16, 255),
+    "d": (166, 65, 22, 255),
+    "o": (232, 106, 44, 255),
+    "h": (255, 155, 66, 255),
+    "w": (255, 244, 230, 255),
+    "s": (255, 248, 240, 255),
+}
+
+FOX_SPRITE = [
+    "............................",
+    "....kk..........kk..........",
+    "...kdkk........kkdk.........",
+    "...kdok........kodk.........",
+    "..kohook......koohok........",
+    "..kohwookkkkkkoowhok........",
+    "..kooohhhhhhhhhoook.........",
+    "..koohhhhhhhhhhhook.........",
+    "..kooheehhhhheehook.........",
+    ".kkoowsewwwwwwsewook........",
+    ".kwwwwwwwwkkwwwwwwwk........",
+    "..kwwwwwwwwwwwwwwwk.........",
+    "...kkkkkkkkkkkkkkk....kkk...",
+    "....khhhoooooooook...kwwwk..",
+    "...khhwwwwwoooooook.kwwwwk..",
+    "...khwwwwwwwooooookkwwwhok..",
+    "..kohwwwwwwwwoooookwhoohok..",
+    "..kohwwwwwwwwoooookhoooook..",
+    "..koohwwwwwoooooookhooodk...",
+    "..koooohoooooooooooooddk....",
+    "...kwwkkoooookwwkkooddk.....",
+    "...kwwk.kkkkk.kwwkkkkk......",
+    "....kk.........kk...........",
+    "............................",
+]
+
+
+def build_fox_data_url() -> str:
+    height = len(FOX_SPRITE)
+    width = len(FOX_SPRITE[0])
+    image = Image.new("RGBA", (width, height))
+    pixels = image.load()
+    assert pixels is not None
+    for y, row in enumerate(FOX_SPRITE):
+        assert len(row) == width
+        for x, ch in enumerate(row):
+            pixels[x, y] = FOX_PALETTE[ch]
+    buffer = io.BytesIO()
+    image.save(buffer, "WEBP", lossless=True, quality=100, method=6, exact=True)
+    return "data:image/webp;base64," + base64.b64encode(buffer.getvalue()).decode()
