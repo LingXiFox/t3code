@@ -1,9 +1,15 @@
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import { assert, describe, it } from "@effect/vitest";
 
 import {
   buildReleaseMetadataComment,
   buildUpdateFeedManifest,
   classifyPatchSets,
+  classifyRepositoryChanges,
   computeNextNightlyVersion,
   normalizeBaseVersion,
   resolveLatestNightlyTag,
@@ -133,5 +139,44 @@ describe("lingxi-release-source", () => {
       },
       releasedAt: "2026-11-22T06:00:00.000Z",
     });
+  });
+
+  it("bounds zero-tag bootstrap classification to merge-base(HEAD, upstreamRef)..HEAD", () => {
+    const repoRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "lingxi-release-git-"));
+    const run = (args: ReadonlyArray<string>) =>
+      NodeChildProcess.execFileSync("git", args, {
+        cwd: repoRoot,
+        encoding: "utf8",
+      }).trim();
+
+    try {
+      run(["init", "-b", "main"]);
+      run(["config", "user.name", "LingXi Test"]);
+      run(["config", "user.email", "test@lingxifox.dev"]);
+
+      NodeFS.writeFileSync(NodePath.join(repoRoot, "README.md"), "upstream base\n", "utf8");
+      run(["add", "README.md"]);
+      run(["commit", "-m", "chore: upstream base"]);
+
+      run(["checkout", "-b", "lingxifox"]);
+      NodeFS.writeFileSync(NodePath.join(repoRoot, "FORK.md"), "lingxi fork change\n", "utf8");
+      run(["add", "FORK.md"]);
+      run(["commit", "-m", "feat(lingxi): fork-only change"]);
+
+      const result = classifyRepositoryChanges({
+        repoRoot,
+        headRef: "HEAD",
+        upstreamRef: "main",
+      });
+
+      assert.isNull(result.baseTag);
+      assert.equal(result.classification, "local-only");
+      assert.isTrue(result.shouldPublishNightly);
+      assert.equal(result.localCommits.length, 1);
+      assert.equal(result.localCommits[0]?.subject, "feat(lingxi): fork-only change");
+      assert.equal(result.upstreamCommits.length, 0);
+    } finally {
+      NodeFS.rmSync(repoRoot, { recursive: true, force: true });
+    }
   });
 });
