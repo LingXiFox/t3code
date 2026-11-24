@@ -66,7 +66,10 @@ jobs:
         vars.LINGXI_AUTO_NIGHTLY_ENABLED == 'true'
       ) ||
       (
-        startsWith(github.workflow_ref, 'LingXiFox/t3code/.github/workflows/lingxi-upstream-sync.yml@refs/heads/lingxifox') &&
+        (
+          startsWith(github.workflow_ref, 'LingXiFox/t3code/.github/workflows/lingxi-upstream-sync.yml@refs/heads/lingxifox') ||
+          startsWith(github.workflow_ref, 'LingXiFox/t3code/.github/workflows/lingxi-upstream-sync-apply.yml@refs/heads/lingxifox')
+        ) &&
         vars.LINGXI_AUTO_NIGHTLY_ENABLED == 'true' &&
         inputs.caller_verified == true &&
         inputs.target_sha != ''
@@ -134,7 +137,7 @@ jobs:
               echo "::error::Checked out SHA ($COMMIT_SHA) does not match workflow_run head_sha (${{ github.event.workflow_run.head_sha }})."
               exit 1
             fi
-          elif [[ "${{ github.workflow_ref }}" == LingXiFox/t3code/.github/workflows/lingxi-upstream-sync.yml@refs/heads/lingxifox* ]]; then
+          elif [[ "${{ github.workflow_ref }}" == LingXiFox/t3code/.github/workflows/lingxi-upstream-sync.yml@refs/heads/lingxifox* || "${{ github.workflow_ref }}" == LingXiFox/t3code/.github/workflows/lingxi-upstream-sync-apply.yml@refs/heads/lingxifox* ]]; then
             if [[ "${{ vars.LINGXI_AUTO_NIGHTLY_ENABLED }}" != "true" || "${{ inputs.caller_verified }}" != "true" ]]; then
               echo "::error::Upstream sync workflow_call Nightly trigger requires LINGXI_AUTO_NIGHTLY_ENABLED=true and caller_verified=true."
               exit 1

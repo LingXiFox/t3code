@@ -24,6 +24,7 @@ permissions:
   contents: write
   pull-requests: write
   actions: read
+  statuses: write
 
 jobs:
   prepare-sync:
@@ -32,11 +33,13 @@ jobs:
     timeout-minutes: 20
     if: github.event_name == 'workflow_dispatch' || vars.LINGXI_AUTO_SYNC_ENABLED == 'true'
     outputs:
-      sync_needed: ${{ steps.sync_branch.outputs.sync_needed }}
+      verify_needed: ${{ steps.sync_branch.outputs.verify_needed }}
+      auto_apply_eligible: ${{ steps.sync_branch.outputs.auto_apply_eligible }}
       manual_review_required: ${{ steps.sync_branch.outputs.manual_review_required }}
       candidate_sha: ${{ steps.sync_branch.outputs.candidate_sha }}
       candidate_pushed: ${{ steps.sync_branch.outputs.candidate_pushed }}
       lingxifox_before_sha: ${{ steps.sync_branch.outputs.lingxifox_before_sha }}
+      base_sha: ${{ steps.sync_branch.outputs.base_sha }}
       upstream_sha: ${{ steps.mirror_main.outputs.upstream_sha }}
       sync_branch: ${{ steps.sync_branch.outputs.sync_branch }}
       behind_count: ${{ steps.sync_branch.outputs.behind_count }}
@@ -145,11 +148,13 @@ jobs:
           BASE_SHA="$(git merge-base origin/lingxifox upstream/main)"
           LINGXIFOX_BEFORE_SHA="$(git rev-parse origin/lingxifox)"
           echo "behind_count=$BEHIND_COUNT" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
           echo "lingxifox_before_sha=$LINGXIFOX_BEFORE_SHA" >> "$GITHUB_OUTPUT"
           echo "candidate_pushed=false" >> "$GITHUB_OUTPUT"
 
           if [[ "$BEHIND_COUNT" == "0" ]]; then
-            echo "sync_needed=false" >> "$GITHUB_OUTPUT"
+            echo "verify_needed=false" >> "$GITHUB_OUTPUT"
+            echo "auto_apply_eligible=false" >> "$GITHUB_OUTPUT"
             echo "manual_review_required=false" >> "$GITHUB_OUTPUT"
             echo "lingxifox already includes all upstream/main commits."
             {
@@ -173,6 +178,7 @@ jobs:
             {
               echo "### Upstream Sync Blocked (Rebase Conflict)"
               echo ""
+              echo "- **Status**: Blocked — Rebase Conflict"
               echo "- **Stage**: \`git rebase upstream/main\`"
               echo "- **upstream/main**: \`$UPSTREAM_SHA\`"
               echo "- **lingxifox (preserved)**: \`$LINGXIFOX_BEFORE_SHA\`"
@@ -208,38 +214,106 @@ jobs:
           echo "manual_review_required=$REQUIRES_MANUAL_REVIEW" >> "$GITHUB_OUTPUT"
 
           if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            PLAN_JSON="$(node scripts/lingxi-upstream-sync.ts plan \
+              --behind-count "$BEHIND_COUNT" \
+              --dry-run true \
+              --manual-review-required "$REQUIRES_MANUAL_REVIEW" \
+              --candidate-pushed false)"
+            VERIFY_NEEDED="$(node -e 'console.log(JSON.parse(process.argv[1]).verifyNeeded)' "$PLAN_JSON")"
+            AUTO_APPLY_ELIGIBLE="$(node -e 'console.log(JSON.parse(process.argv[1]).autoApplyEligible)' "$PLAN_JSON")"
+            echo "verify_needed=$VERIFY_NEEDED" >> "$GITHUB_OUTPUT"
+            echo "auto_apply_eligible=$AUTO_APPLY_ELIGIBLE" >> "$GITHUB_OUTPUT"
             echo "[dry-run] Rebase succeeded cleanly. Rebased LingXi commits on top of upstream/main:"
             git log --oneline upstream/main..HEAD
             echo "[dry-run] Risk requiresManualReview=$REQUIRES_MANUAL_REVIEW"
-            echo "sync_needed=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Upstream Sync Dry Run"
+              echo ""
+              echo "- **Status**: Dry Run (no branch pushed, no CI run, no PR opened, \`lingxifox\` untouched)"
+              echo "- **Risk Level**: \`$([[ "$REQUIRES_MANUAL_REVIEW" == "true" ]] && echo "HIGH RISK" || echo "LOW RISK")\`"
+              echo "- **Candidate SHA (local only)**: \`$CANDIDATE_SHA\`"
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          git push --force-with-lease origin "HEAD:refs/heads/${SYNC_BRANCH}"
+          REMOTE_SYNC_SHA="$(git ls-remote origin "refs/heads/${SYNC_BRANCH}" | awk '{print $1}')"
+          if [[ -n "$REMOTE_SYNC_SHA" ]]; then
+            git push --force-with-lease="refs/heads/${SYNC_BRANCH}:${REMOTE_SYNC_SHA}" \
+              origin "HEAD:refs/heads/${SYNC_BRANCH}"
+          else
+            git push --force-with-lease="refs/heads/${SYNC_BRANCH}:" \
+              origin "HEAD:refs/heads/${SYNC_BRANCH}"
+          fi
           echo "candidate_pushed=true" >> "$GITHUB_OUTPUT"
 
-          # A high-risk rebase stays reviewable as a branch and a PR instead of
-          # vanishing with the runner; lingxifox is left untouched either way.
+          PLAN_JSON="$(node scripts/lingxi-upstream-sync.ts plan \
+            --behind-count "$BEHIND_COUNT" \
+            --dry-run false \
+            --manual-review-required "$REQUIRES_MANUAL_REVIEW" \
+            --candidate-pushed true)"
+          VERIFY_NEEDED="$(node -e 'console.log(JSON.parse(process.argv[1]).verifyNeeded)' "$PLAN_JSON")"
+          AUTO_APPLY_ELIGIBLE="$(node -e 'console.log(JSON.parse(process.argv[1]).autoApplyEligible)' "$PLAN_JSON")"
+          echo "verify_needed=$VERIFY_NEEDED" >> "$GITHUB_OUTPUT"
+          echo "auto_apply_eligible=$AUTO_APPLY_ELIGIBLE" >> "$GITHUB_OUTPUT"
+
           if [[ "$REQUIRES_MANUAL_REVIEW" == "true" ]]; then
-            echo "sync_needed=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Upstream sync is high risk; candidate $SYNC_BRANCH was pushed for manual review and lingxifox was left untouched."
-            exit 0
+            echo "::warning::Upstream sync is high risk; candidate $SYNC_BRANCH was pushed for full CI verification and manual review. lingxifox remains untouched."
           fi
 
-          echo "sync_needed=true" >> "$GITHUB_OUTPUT"
+      - name: Upload risk summary for review PR
+        if: steps.sync_branch.outputs.manual_review_required == 'true' && steps.sync_branch.outputs.candidate_pushed == 'true' && inputs.dry_run != true
+        uses: actions/upload-artifact@v5
+        with:
+          name: lingxi-upstream-risk-summary
+          path: risk-summary.md
+          retention-days: 1
 
   verify-candidate:
     name: Verify Rebased Candidate
     needs: prepare-sync
-    if: needs.prepare-sync.outputs.sync_needed == 'true' && inputs.dry_run != true
+    if: needs.prepare-sync.outputs.verify_needed == 'true' && inputs.dry_run != true
     uses: ./.github/workflows/lingxi-verify.yml
     with:
       ref: ${{ needs.prepare-sync.outputs.candidate_sha }}
 
+  record-candidate-status:
+    name: Record Candidate CI Status
+    needs: [prepare-sync, verify-candidate]
+    if: >-
+      always() &&
+      needs.prepare-sync.result == 'success' &&
+      needs.prepare-sync.outputs.verify_needed == 'true' &&
+      inputs.dry_run != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Publish candidate CI commit status
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CANDIDATE_SHA="${{ needs.prepare-sync.outputs.candidate_sha }}"
+          BEFORE_SHORT="${{ needs.prepare-sync.outputs.lingxifox_before_sha }}"
+          BEFORE_SHORT="${BEFORE_SHORT:0:8}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if [[ "${{ needs.verify-candidate.result }}" == "success" ]]; then
+            STATE="success"
+            DESC="Candidate CI passed against lingxifox ${BEFORE_SHORT}"
+          else
+            STATE="failure"
+            DESC="Candidate CI ${{ needs.verify-candidate.result }} against lingxifox ${BEFORE_SHORT}"
+          fi
+          gh api -X POST "repos/${{ github.repository }}/statuses/${CANDIDATE_SHA}" \
+            -f state="$STATE" \
+            -f context="lingxi/upstream-sync-candidate-ci" \
+            -f target_url="$RUN_URL" \
+            -f description="${DESC:0:140}" >/dev/null
+
   open-review-pr:
     name: Open or Update Sync Review PR
-    needs: prepare-sync
+    needs: [prepare-sync, verify-candidate, record-candidate-status]
     if: >-
+      always() &&
+      needs.prepare-sync.result == 'success' &&
       needs.prepare-sync.outputs.candidate_pushed == 'true' &&
       needs.prepare-sync.outputs.manual_review_required == 'true' &&
       inputs.dry_run != true
@@ -253,44 +327,87 @@ jobs:
           fetch-depth: 0
           fetch-tags: false
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+
+      - name: Download risk summary artifact
+        continue-on-error: true
+        uses: actions/download-artifact@v5
+        with:
+          name: lingxi-upstream-risk-summary
+
       - name: Open or update the single review PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           SYNC_BRANCH="${{ needs.prepare-sync.outputs.sync_branch }}"
           CANDIDATE_SHA="${{ needs.prepare-sync.outputs.candidate_sha }}"
+          BEFORE_SHA="${{ needs.prepare-sync.outputs.lingxifox_before_sha }}"
+          BASE_SHA="${{ needs.prepare-sync.outputs.base_sha }}"
           UPSTREAM_SHA="${{ needs.prepare-sync.outputs.upstream_sha }}"
           BEHIND_COUNT="${{ needs.prepare-sync.outputs.behind_count }}"
-          BODY_FILE="$(mktemp)"
-          {
-            echo "Automated upstream sync candidate. The rebase is high risk, so it stays on a branch until a human reviews it."
-            echo ""
-            echo "- **upstream/main**: \`$UPSTREAM_SHA\`"
-            echo "- **candidate**: \`$CANDIDATE_SHA\` (branch \`$SYNC_BRANCH\`)"
-            echo "- **lingxifox behind by**: $BEHIND_COUNT commits"
-            echo ""
-            echo "Risk findings live in the run summary of the LingXi Upstream Sync run that pushed this branch."
-            echo ""
-            echo "Landing this PR fast-forwards \`lingxifox\` onto the candidate. The next sync force-updates the same branch, so corrections pushed here do not carry forward; land them on \`lingxifox\` first when they must persist."
-          } > "$BODY_FILE"
+          VERIFY_RESULT="${{ needs.verify-candidate.result }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          if [[ "$VERIFY_RESULT" == "success" ]]; then
+            PR_STATUS="verified-pending-approval"
+          else
+            PR_STATUS="ci-failed"
+          fi
 
           EXISTING="$(gh pr list --head "$SYNC_BRANCH" --base lingxifox --state open --json number --jq '.[0].number // empty')"
+          BODY_FILE="$(mktemp)"
+          ARGS=(
+            scripts/lingxi-upstream-sync.ts render-pr-body
+            --sync-branch "$SYNC_BRANCH"
+            --candidate-sha "$CANDIDATE_SHA"
+            --lingxifox-before-sha "$BEFORE_SHA"
+            --upstream-sha "$UPSTREAM_SHA"
+            --base-sha "$BASE_SHA"
+            --behind-count "$BEHIND_COUNT"
+            --verify-result "$VERIFY_RESULT"
+            --sync-run-id "${{ github.run_id }}"
+            --run-url "$RUN_URL"
+            --status "$PR_STATUS"
+            --risk-summary-file risk-summary.md
+            --out "$BODY_FILE"
+          )
+          if [[ -n "$EXISTING" ]]; then
+            ARGS+=(--pr-number "$EXISTING")
+          fi
+          node "${ARGS[@]}"
+
           PR_TITLE="chore(sync): replay lingxifox onto upstream/main ($BEHIND_COUNT commits)"
           if [[ -n "$EXISTING" ]]; then
-            gh pr edit "$EXISTING" --body-file "$BODY_FILE"
-            echo "Updated existing sync review PR #$EXISTING."
+            gh pr edit "$EXISTING" --title "$PR_TITLE" --body-file "$BODY_FILE"
+            echo "Updated existing sync review PR #$EXISTING ($PR_STATUS)."
           else
             gh pr create --head "$SYNC_BRANCH" --base lingxifox --title "$PR_TITLE" --body-file "$BODY_FILE"
           fi
 
+          {
+            if [[ "$PR_STATUS" == "verified-pending-approval" ]]; then
+              echo "### High-Risk Upstream Sync: Verified — Pending Manual Approval"
+            else
+              echo "### High-Risk Upstream Sync: Blocked — CI Failed"
+            fi
+            echo ""
+            echo "- **Verify Result**: \`$VERIFY_RESULT\`"
+            echo "- **Candidate Branch**: \`$SYNC_BRANCH\` (\`$CANDIDATE_SHA\`)"
+            echo "- **lingxifox (untouched)**: \`$BEFORE_SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   cleanup-failed-candidate:
-    name: Cleanup Failed Sync Candidate
+    name: Cleanup Failed Low-Risk Sync Candidate
     needs: [prepare-sync, verify-candidate]
     if: >-
       always() &&
-      needs.prepare-sync.outputs.sync_needed == 'true' &&
-      needs.prepare-sync.outputs.manual_review_required != 'true' &&
-      needs.verify-candidate.result != 'success'
+      needs.prepare-sync.result == 'success' &&
+      needs.prepare-sync.outputs.auto_apply_eligible == 'true' &&
+      needs.verify-candidate.result != 'success' &&
+      inputs.dry_run != true
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -305,6 +422,7 @@ jobs:
           {
             echo "### Upstream Sync Blocked (Candidate CI Failed)"
             echo ""
+            echo "- **Status**: Blocked — CI Failed"
             echo "- **Verify Result**: \`${{ needs.verify-candidate.result }}\`"
             echo "- **Candidate SHA**: \`${{ needs.prepare-sync.outputs.candidate_sha }}\`"
             echo "- **Upstream SHA**: \`${{ needs.prepare-sync.outputs.upstream_sha }}\`"
@@ -313,9 +431,12 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   apply-sync:
-    name: Fast-Forward lingxifox After Candidate CI
+    name: Update lingxifox After Candidate CI (Low-Risk)
     needs: [prepare-sync, verify-candidate]
-    if: needs.prepare-sync.outputs.sync_needed == 'true' && inputs.dry_run != true
+    if: >-
+      needs.prepare-sync.outputs.auto_apply_eligible == 'true' &&
+      needs.verify-candidate.result == 'success' &&
+      inputs.dry_run != true
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -327,6 +448,8 @@ jobs:
           fetch-tags: false
 
       - name: Update lingxifox to verified candidate SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           SYNC_BRANCH="${{ needs.prepare-sync.outputs.sync_branch }}"
           CANDIDATE_SHA="${{ needs.prepare-sync.outputs.candidate_sha }}"
@@ -337,18 +460,29 @@ jobs:
             "+refs/heads/lingxifox:refs/remotes/origin/lingxifox"
 
           ACTUAL_CANDIDATE="$(git rev-parse "refs/remotes/origin/${SYNC_BRANCH}")"
+          ACTUAL_LINGXIFOX="$(git rev-parse "refs/remotes/origin/lingxifox")"
           if [[ "$ACTUAL_CANDIDATE" != "$CANDIDATE_SHA" ]]; then
             echo "::error::Candidate branch moved unexpectedly ($ACTUAL_CANDIDATE != $CANDIDATE_SHA)."
+            exit 1
+          fi
+          if [[ "$ACTUAL_LINGXIFOX" != "$BEFORE_SHA" ]]; then
+            echo "::error::Target branch lingxifox moved unexpectedly ($ACTUAL_LINGXIFOX != $BEFORE_SHA)."
             exit 1
           fi
 
           git push --force-with-lease="refs/heads/lingxifox:${BEFORE_SHA}" \
             origin "${CANDIDATE_SHA}:refs/heads/lingxifox"
+
+          EXISTING_PR="$(gh pr list --head "$SYNC_BRANCH" --base lingxifox --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$EXISTING_PR" ]]; then
+            gh pr close "$EXISTING_PR" --comment "Low-risk upstream sync verified and applied to \`lingxifox\` (\`$CANDIDATE_SHA\`)." || true
+          fi
           git push origin --delete "${SYNC_BRANCH}" || true
 
           {
             echo "### Upstream Sync Applied"
             echo ""
+            echo "- **Status**: Synced"
             echo "- **Before SHA**: \`$BEFORE_SHA\`"
             echo "- **New lingxifox SHA**: \`$CANDIDATE_SHA\`"
             echo "- **Upstream SHA**: \`${{ needs.prepare-sync.outputs.upstream_sha }}\`"
@@ -359,7 +493,9 @@ jobs:
     name: Trigger Nightly Release (Verified Sync)
     needs: [prepare-sync, verify-candidate, apply-sync]
     if: >-
-      needs.prepare-sync.outputs.sync_needed == 'true' &&
+      needs.prepare-sync.outputs.auto_apply_eligible == 'true' &&
+      needs.verify-candidate.result == 'success' &&
+      needs.apply-sync.result == 'success' &&
       inputs.dry_run != true &&
       vars.LINGXI_AUTO_NIGHTLY_ENABLED == 'true'
     uses: ./.github/workflows/lingxi-nightly.yml

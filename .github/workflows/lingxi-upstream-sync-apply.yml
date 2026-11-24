@@ -1,0 +1,329 @@
+name: LingXi Upstream Sync Apply
+
+on:
+  issue_comment:
+    types:
+      - created
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open sync review PR number
+        required: true
+        type: string
+      expected_candidate_sha:
+        description: Expected 40-char SHA of sync/upstream-rebase candidate
+        required: true
+        type: string
+      expected_lingxifox_sha:
+        description: Expected 40-char SHA of current lingxifox HEAD
+        required: true
+        type: string
+
+concurrency:
+  group: lingxi-upstream-sync-apply
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: read
+  statuses: read
+  checks: read
+
+jobs:
+  validate-and-apply:
+    name: Validate Approval & Apply High-Risk Sync
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    if: >-
+      github.repository == 'LingXiFox/t3code' &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event_name == 'issue_comment' &&
+          github.event.issue.pull_request != null &&
+          startsWith(github.event.comment.body, '/apply-sync')
+        )
+      )
+    outputs:
+      applied: ${{ steps.apply.outputs.applied }}
+      candidate_sha: ${{ steps.apply.outputs.candidate_sha }}
+      lingxifox_before_sha: ${{ steps.apply.outputs.lingxifox_before_sha }}
+      upstream_sha: ${{ steps.apply.outputs.upstream_sha }}
+      pr_number: ${{ steps.apply.outputs.pr_number }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: lingxifox
+          fetch-depth: 0
+          fetch-tags: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+
+      - name: Gather PR, review, CI, and branch state
+        id: gather
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          ACTOR_LOGIN: ${{ github.actor }}
+          ACTOR_TYPE: ${{ github.event_name == 'issue_comment' && github.event.sender.type || 'User' }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          DISPATCH_PR_NUMBER: ${{ inputs.pr_number }}
+          DISPATCH_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}
+          DISPATCH_LINGXIFOX_SHA: ${{ inputs.expected_lingxifox_sha }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          ACTOR="${{ github.actor }}"
+          if [[ "${{ github.event_name }}" == "issue_comment" ]]; then
+            PR_NUMBER="${{ github.event.issue.number }}"
+            ACTOR_TYPE="${{ github.event.sender.type }}"
+          else
+            PR_NUMBER="${{ inputs.pr_number }}"
+            ACTOR_TYPE="User"
+          fi
+
+          if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid PR number '$PR_NUMBER'."
+            exit 1
+          fi
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+          git fetch --no-tags origin \
+            "+refs/heads/lingxifox:refs/remotes/origin/lingxifox" \
+            "+refs/heads/main:refs/remotes/origin/main"
+          git fetch --no-tags origin "+refs/heads/sync/upstream-rebase:refs/remotes/origin/sync/upstream-rebase" || true
+
+          REMOTE_LINGXIFOX_SHA="$(git rev-parse refs/remotes/origin/lingxifox)"
+          REMOTE_CANDIDATE_SHA="$(git rev-parse --verify refs/remotes/origin/sync/upstream-rebase 2>/dev/null || true)"
+
+          gh api "repos/$REPO/pulls/$PR_NUMBER" > pr.json
+          gh api --paginate --slurp "repos/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" --jq 'add // []' > reviews.json
+
+          ACTOR_PERMISSION="$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq '.permission' 2>/dev/null || echo "none")"
+
+          node -e '
+            const fs = require("node:fs");
+            const reviews = JSON.parse(fs.readFileSync("reviews.json", "utf8"));
+            const logins = [...new Set(reviews.map((r) => r.user?.login).filter(Boolean))];
+            fs.writeFileSync("reviewer-logins.txt", logins.join("\n"));
+          '
+          echo "{}" > reviewer-permissions.json
+          while IFS= read -r login; do
+            [[ -z "$login" ]] && continue
+            PERM="$(gh api "repos/$REPO/collaborators/$login/permission" --jq '.permission' 2>/dev/null || echo "none")"
+            node -e '
+              const fs = require("node:fs");
+              const map = JSON.parse(fs.readFileSync("reviewer-permissions.json", "utf8"));
+              map[process.argv[1]] = process.argv[2];
+              fs.writeFileSync("reviewer-permissions.json", JSON.stringify(map));
+            ' "$login" "$PERM"
+          done < reviewer-logins.txt
+
+          PR_HEAD_SHA="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync("pr.json", "utf8")).head.sha || "")')"
+          if [[ -n "$PR_HEAD_SHA" ]]; then
+            gh api --paginate --slurp "repos/$REPO/commits/$PR_HEAD_SHA/statuses?per_page=100" --jq 'add // []' > statuses.json
+          else
+            echo "[]" > statuses.json
+          fi
+
+          node -e 'console.log(JSON.parse(require("node:fs").readFileSync("pr.json", "utf8")).body || "")' > pr-body.md
+          SYNC_RUN_ID=""
+          if META_JSON="$(node scripts/lingxi-upstream-sync.ts parse-pr-metadata --body-file pr-body.md 2>/dev/null)"; then
+            SYNC_RUN_ID="$(node -e 'console.log(JSON.parse(process.argv[1]).syncRunId)' "$META_JSON")"
+            UPSTREAM_META_SHA="$(node -e 'console.log(JSON.parse(process.argv[1]).upstreamSha)' "$META_JSON")"
+          else
+            UPSTREAM_META_SHA=""
+          fi
+
+          IS_UPSTREAM_ANCESTOR="false"
+          if [[ -n "$REMOTE_CANDIDATE_SHA" && -n "$UPSTREAM_META_SHA" ]] && \
+             git merge-base --is-ancestor "$UPSTREAM_META_SHA" "$REMOTE_CANDIDATE_SHA" 2>/dev/null; then
+            IS_UPSTREAM_ANCESTOR="true"
+          fi
+
+          export ACTOR_PERMISSION REMOTE_CANDIDATE_SHA REMOTE_LINGXIFOX_SHA IS_UPSTREAM_ANCESTOR
+
+          if [[ -n "$SYNC_RUN_ID" ]]; then
+            gh api "repos/$REPO/actions/runs/$SYNC_RUN_ID" > sync-run.json 2>/dev/null || echo "null" > sync-run.json
+            gh api --paginate --slurp "repos/$REPO/actions/runs/$SYNC_RUN_ID/jobs?per_page=100" --jq '[.[].jobs[]]' > sync-run-jobs.json 2>/dev/null || echo "[]" > sync-run-jobs.json
+          else
+            echo "null" > sync-run.json
+            echo "[]" > sync-run-jobs.json
+          fi
+
+          node -e '
+            const fs = require("node:fs");
+            const pr = JSON.parse(fs.readFileSync("pr.json", "utf8"));
+            const reviews = JSON.parse(fs.readFileSync("reviews.json", "utf8"));
+            const reviewerPermissions = JSON.parse(fs.readFileSync("reviewer-permissions.json", "utf8"));
+            const statuses = JSON.parse(fs.readFileSync("statuses.json", "utf8"));
+            const syncRunRaw = JSON.parse(fs.readFileSync("sync-run.json", "utf8"));
+            const syncRunJobsRaw = JSON.parse(fs.readFileSync("sync-run-jobs.json", "utf8"));
+
+            const payload = {
+              repository: process.env.GITHUB_REPOSITORY,
+              workflowRef: process.env.GITHUB_WORKFLOW_REF,
+              gitRef: process.env.GITHUB_REF,
+              trigger: process.env.EVENT_NAME,
+              actor: {
+                login: process.env.ACTOR_LOGIN,
+                type: process.env.ACTOR_TYPE,
+                permission: process.env.ACTOR_PERMISSION,
+              },
+              commentBody: process.env.COMMENT_BODY || undefined,
+              dispatchInputs: process.env.EVENT_NAME === "workflow_dispatch" ? {
+                prNumber: process.env.DISPATCH_PR_NUMBER,
+                expectedCandidateSha: process.env.DISPATCH_CANDIDATE_SHA,
+                expectedLingxifoxSha: process.env.DISPATCH_LINGXIFOX_SHA,
+              } : undefined,
+              pr: {
+                number: pr.number,
+                state: pr.state,
+                body: pr.body || "",
+                headRef: pr.head?.ref || "",
+                headSha: pr.head?.sha || "",
+                headRepoFullName: pr.head?.repo?.full_name || "",
+                baseRef: pr.base?.ref || "",
+                baseRepoFullName: pr.base?.repo?.full_name || "",
+              },
+              remoteCandidateSha: process.env.REMOTE_CANDIDATE_SHA,
+              remoteLingxifoxSha: process.env.REMOTE_LINGXIFOX_SHA,
+              isUpstreamAncestorOfCandidate: process.env.IS_UPSTREAM_ANCESTOR === "true",
+              reviews: reviews.map((r) => ({
+                userLogin: r.user?.login || "",
+                userType: r.user?.type || "User",
+                state: r.state || "",
+                commitId: r.commit_id || "",
+                submittedAt: r.submitted_at || "",
+              })),
+              reviewerPermissions,
+              commitStatuses: statuses.map((s) => ({
+                context: s.context || "",
+                state: s.state || "",
+                targetUrl: s.target_url || "",
+                creatorLogin: s.creator?.login || "",
+                updatedAt: s.updated_at || "",
+              })),
+              syncRun: syncRunRaw ? {
+                id: syncRunRaw.id,
+                path: syncRunRaw.path || "",
+                repositoryFullName: syncRunRaw.repository?.full_name || "",
+                headBranch: syncRunRaw.head_branch || "",
+                headSha: syncRunRaw.head_sha || "",
+                status: syncRunRaw.status || "",
+                conclusion: syncRunRaw.conclusion ?? null,
+              } : null,
+              syncRunJobs: syncRunJobsRaw.map((j) => ({
+                name: j.name || "",
+                status: j.status || "",
+                conclusion: j.conclusion ?? null,
+              })),
+            };
+            fs.writeFileSync("validation-input.json", JSON.stringify(payload, null, 2));
+          '
+
+      - name: Validate approval and apply via force-with-lease
+        id: apply
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PR_NUMBER="${{ steps.gather.outputs.pr_number }}"
+
+          set +e
+          node scripts/lingxi-upstream-sync.ts validate-approval \
+            --input validation-input.json \
+            --json-out validation-result.json \
+            --summary-out validation-summary.md \
+            --comment-out validation-comment.md
+          VALID_EXIT=$?
+          set -e
+
+          cat validation-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$VALID_EXIT" -ne 0 ]]; then
+            echo "applied=false" >> "$GITHUB_OUTPUT"
+            if node -e '
+              const fs = require("node:fs");
+              const pr = JSON.parse(fs.readFileSync("pr.json", "utf8"));
+              process.exit(pr.head?.ref === "sync/upstream-rebase" && pr.base?.ref === "lingxifox" ? 0 : 1);
+            '; then
+              gh pr comment "$PR_NUMBER" --body-file validation-comment.md || true
+            fi
+            echo "::error::Approval or branch-state validation failed; lingxifox was left untouched."
+            exit 1
+          fi
+
+          CANDIDATE_SHA="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync("validation-result.json", "utf8")).candidateSha)')"
+          BEFORE_SHA="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync("validation-result.json", "utf8")).lingxifoxBeforeSha)')"
+          UPSTREAM_SHA="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync("validation-result.json", "utf8")).upstreamSha)')"
+          BASE_SHA="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync("validation-result.json", "utf8")).baseSha)')"
+          SYNC_BRANCH="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync("validation-result.json", "utf8")).syncBranch)')"
+          BEHIND_COUNT="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync("validation-result.json", "utf8")).behindCount)')"
+          SYNC_RUN_ID="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync("validation-result.json", "utf8")).syncRunId)')"
+          APPROVERS="$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync("validation-result.json", "utf8")).approvers.join(","))')"
+
+          git config user.name "lingxifox-bot"
+          git config user.email "bot@lingxifox.dev"
+          git fetch --no-tags origin \
+            "+refs/heads/${SYNC_BRANCH}:refs/remotes/origin/${SYNC_BRANCH}" \
+            "+refs/heads/lingxifox:refs/remotes/origin/lingxifox"
+
+          ACTUAL_CANDIDATE="$(git rev-parse "refs/remotes/origin/${SYNC_BRANCH}")"
+          ACTUAL_LINGXIFOX="$(git rev-parse "refs/remotes/origin/lingxifox")"
+          if [[ "$ACTUAL_CANDIDATE" != "$CANDIDATE_SHA" || "$ACTUAL_LINGXIFOX" != "$BEFORE_SHA" ]]; then
+            echo "applied=false" >> "$GITHUB_OUTPUT"
+            echo "::error::Branch state changed right before push (candidate=$ACTUAL_CANDIDATE vs $CANDIDATE_SHA, lingxifox=$ACTUAL_LINGXIFOX vs $BEFORE_SHA)."
+            exit 1
+          fi
+
+          git push --force-with-lease="refs/heads/lingxifox:${BEFORE_SHA}" \
+            origin "${CANDIDATE_SHA}:refs/heads/lingxifox"
+
+          SYNC_RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${SYNC_RUN_ID}"
+          APPLY_RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          UPDATED_BODY="$(mktemp)"
+          node scripts/lingxi-upstream-sync.ts render-pr-body \
+            --sync-branch "$SYNC_BRANCH" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --lingxifox-before-sha "$BEFORE_SHA" \
+            --upstream-sha "$UPSTREAM_SHA" \
+            --base-sha "$BASE_SHA" \
+            --behind-count "$BEHIND_COUNT" \
+            --verify-result "success" \
+            --sync-run-id "$SYNC_RUN_ID" \
+            --run-url "$SYNC_RUN_URL" \
+            --apply-run-url "$APPLY_RUN_URL" \
+            --approvers "$APPROVERS" \
+            --pr-number "$PR_NUMBER" \
+            --status "synced" \
+            --out "$UPDATED_BODY"
+
+          gh pr edit "$PR_NUMBER" --body-file "$UPDATED_BODY" || true
+          gh pr comment "$PR_NUMBER" --body-file validation-comment.md || true
+          git push origin --delete "$SYNC_BRANCH" || true
+          gh pr close "$PR_NUMBER" || true
+
+          echo "applied=true" >> "$GITHUB_OUTPUT"
+          echo "candidate_sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
+          echo "lingxifox_before_sha=$BEFORE_SHA" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+  trigger-nightly:
+    name: Trigger Nightly Release (Approved Sync)
+    needs: validate-and-apply
+    if: >-
+      needs.validate-and-apply.outputs.applied == 'true' &&
+      vars.LINGXI_AUTO_NIGHTLY_ENABLED == 'true'
+    uses: ./.github/workflows/lingxi-nightly.yml
+    with:
+      target_sha: ${{ needs.validate-and-apply.outputs.candidate_sha }}
+      force_publish: false
+      caller_verified: true
