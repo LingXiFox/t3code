@@ -604,6 +604,28 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 }
 
+/* A backdrop-filter surface re-blurs its backdrop every frame something inside it
+   animates, so the running dot pulses in two steps rather than continuously. */
+@keyframes live-run-pulse {
+  0%,
+  49.9% {
+    opacity: 1;
+  }
+
+  50%,
+  100% {
+    opacity: 0.4;
+  }
+}
+
+@utility live-run-pulse {
+  animation: live-run-pulse 2s infinite;
+
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
 @utility visible-animate-spin {
   animation: var(--animate-spin);
   animation-play-state: var(--visible-animation-state, paused);
