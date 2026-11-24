@@ -1281,6 +1281,12 @@ function ComposerPromptEditorTiptapInner(
       enablePasteRules: false,
       editorProps: {
         attributes: editorAttributes,
+        // ProseMirror's default reveal measures every ancestor rect + computed style on each
+        // keystroke; the editor box is the only scroller that should move.
+        handleScrollToSelection: (view) => {
+          revealSelectionInView(view);
+          return true;
+        },
         handleDOMEvents: {
           // Composer commands keep precedence; otherwise true skips the editor's keymaps without
           // preventDefault, so a bound app command still runs.
@@ -2092,8 +2098,15 @@ function scrollTiptapCaretIntoView(editor: TiptapEditor): void {
 
 /** Scrolls only the editor's own box: a mounting composer must not move the timeline or page. */
 function revealCaretInEditor(editor: TiptapEditor): void {
-  const scroller = editor.view.dom;
-  const caret = editor.view.coordsAtPos(editor.state.selection.head);
+  revealSelectionInView(editor.view);
+}
+
+function revealSelectionInView(view: EditorView): void {
+  const scroller = view.dom;
+  const { selection } = view.state;
+  const caret = view.coordsAtPos(
+    selection instanceof NodeSelection ? selection.from + 1 : selection.head,
+  );
   const box = scroller.getBoundingClientRect();
   // Padding can be reserved for controls drawn over the box, such as mobile pending-answer actions.
   const style = getComputedStyle(scroller);
