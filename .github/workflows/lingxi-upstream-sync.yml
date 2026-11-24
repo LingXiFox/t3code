@@ -1,5 +1,10 @@
 name: LingXi Upstream Sync
 
+# Only the lingxi-* workflows may run in this fork. Upstream's own workflows are
+# mirrored onto main for history and diffing, never for execution, so every sync
+# disables them again: upstream adds and renames workflows often, and a freshly
+# mirrored workflow starts out active.
+
 on:
   schedule:
     - cron: "0 18 * * *"
@@ -17,6 +22,7 @@ concurrency:
 
 permissions:
   contents: write
+  pull-requests: write
   actions: read
 
 jobs:
@@ -29,6 +35,7 @@ jobs:
       sync_needed: ${{ steps.sync_branch.outputs.sync_needed }}
       manual_review_required: ${{ steps.sync_branch.outputs.manual_review_required }}
       candidate_sha: ${{ steps.sync_branch.outputs.candidate_sha }}
+      candidate_pushed: ${{ steps.sync_branch.outputs.candidate_pushed }}
       lingxifox_before_sha: ${{ steps.sync_branch.outputs.lingxifox_before_sha }}
       upstream_sha: ${{ steps.mirror_main.outputs.upstream_sha }}
       sync_branch: ${{ steps.sync_branch.outputs.sync_branch }}
@@ -55,6 +62,19 @@ jobs:
           fi
           git fetch --no-tags upstream +refs/heads/main:refs/remotes/upstream/main
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main +refs/heads/lingxifox:refs/remotes/origin/lingxifox
+
+      - name: Keep only LingXi workflows enabled
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+          gh api --paginate "repos/$REPO/actions/workflows?per_page=100" \
+            --jq '.workflows[] | select((.path | split("/") | last | startswith("lingxi-")) | not) | .path | split("/") | last' |
+          while IFS= read -r name; do
+            [[ -z "$name" ]] && continue
+            gh api -X PUT "repos/$REPO/actions/workflows/$name/disable" >/dev/null 2>&1 || true
+          done
 
       - name: Mirror upstream/main to origin/main (fast-forward only)
         id: mirror_main
@@ -86,6 +106,36 @@ jobs:
             git push origin "upstream/main:refs/heads/main"
           fi
 
+      - name: Disable newly mirrored upstream workflows
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+          gh api --paginate "repos/$REPO/actions/workflows?per_page=100" \
+            --jq '.workflows[] | select((.path | split("/") | last | startswith("lingxi-")) | not) | .path | split("/") | last' |
+          while IFS= read -r name; do
+            [[ -z "$name" ]] && continue
+            gh api -X PUT "repos/$REPO/actions/workflows/$name/disable" >/dev/null 2>&1 || true
+          done
+
+      - name: Cancel upstream runs the mirror push started
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+          # A workflow file that arrives with the mirrored commit registers active and
+          # fires once on this push; cancel that run so no upstream job ever queues here.
+          for STATUS in queued in_progress; do
+            gh api --paginate "repos/$REPO/actions/runs?status=$STATUS&per_page=100" \
+              --jq '.workflow_runs[] | select((.path | split("/") | last | startswith("lingxi-")) | not) | .id' |
+            while IFS= read -r id; do
+              [[ -z "$id" ]] && continue
+              gh api -X POST "repos/$REPO/actions/runs/$id/cancel" >/dev/null 2>&1 || true
+            done
+          done
+
       - name: Check delta, rebase candidate, and evaluate upstream risk
         id: sync_branch
         run: |
@@ -96,6 +146,7 @@ jobs:
           LINGXIFOX_BEFORE_SHA="$(git rev-parse origin/lingxifox)"
           echo "behind_count=$BEHIND_COUNT" >> "$GITHUB_OUTPUT"
           echo "lingxifox_before_sha=$LINGXIFOX_BEFORE_SHA" >> "$GITHUB_OUTPUT"
+          echo "candidate_pushed=false" >> "$GITHUB_OUTPUT"
 
           if [[ "$BEHIND_COUNT" == "0" ]]; then
             echo "sync_needed=false" >> "$GITHUB_OUTPUT"
@@ -164,13 +215,17 @@ jobs:
             exit 0
           fi
 
+          git push --force-with-lease origin "HEAD:refs/heads/${SYNC_BRANCH}"
+          echo "candidate_pushed=true" >> "$GITHUB_OUTPUT"
+
+          # A high-risk rebase stays reviewable as a branch and a PR instead of
+          # vanishing with the runner; lingxifox is left untouched either way.
           if [[ "$REQUIRES_MANUAL_REVIEW" == "true" ]]; then
             echo "sync_needed=false" >> "$GITHUB_OUTPUT"
-            echo "::error::Upstream sync requires manual review due to high-risk changes; lingxifox was left untouched."
-            exit 1
+            echo "::warning::Upstream sync is high risk; candidate $SYNC_BRANCH was pushed for manual review and lingxifox was left untouched."
+            exit 0
           fi
 
-          git push --force-with-lease origin "HEAD:refs/heads/${SYNC_BRANCH}"
           echo "sync_needed=true" >> "$GITHUB_OUTPUT"
 
   verify-candidate:
@@ -181,10 +236,61 @@ jobs:
     with:
       ref: ${{ needs.prepare-sync.outputs.candidate_sha }}
 
+  open-review-pr:
+    name: Open or Update Sync Review PR
+    needs: prepare-sync
+    if: >-
+      needs.prepare-sync.outputs.candidate_pushed == 'true' &&
+      needs.prepare-sync.outputs.manual_review_required == 'true' &&
+      inputs.dry_run != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: lingxifox
+          fetch-depth: 0
+          fetch-tags: false
+
+      - name: Open or update the single review PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SYNC_BRANCH="${{ needs.prepare-sync.outputs.sync_branch }}"
+          CANDIDATE_SHA="${{ needs.prepare-sync.outputs.candidate_sha }}"
+          UPSTREAM_SHA="${{ needs.prepare-sync.outputs.upstream_sha }}"
+          BEHIND_COUNT="${{ needs.prepare-sync.outputs.behind_count }}"
+          BODY_FILE="$(mktemp)"
+          {
+            echo "Automated upstream sync candidate. The rebase is high risk, so it stays on a branch until a human reviews it."
+            echo ""
+            echo "- **upstream/main**: \`$UPSTREAM_SHA\`"
+            echo "- **candidate**: \`$CANDIDATE_SHA\` (branch \`$SYNC_BRANCH\`)"
+            echo "- **lingxifox behind by**: $BEHIND_COUNT commits"
+            echo ""
+            echo "Risk findings live in the run summary of the LingXi Upstream Sync run that pushed this branch."
+            echo ""
+            echo "Landing this PR fast-forwards \`lingxifox\` onto the candidate. The next sync force-updates the same branch, so corrections pushed here do not carry forward; land them on \`lingxifox\` first when they must persist."
+          } > "$BODY_FILE"
+
+          EXISTING="$(gh pr list --head "$SYNC_BRANCH" --base lingxifox --state open --json number --jq '.[0].number // empty')"
+          PR_TITLE="chore(sync): replay lingxifox onto upstream/main ($BEHIND_COUNT commits)"
+          if [[ -n "$EXISTING" ]]; then
+            gh pr edit "$EXISTING" --body-file "$BODY_FILE"
+            echo "Updated existing sync review PR #$EXISTING."
+          else
+            gh pr create --head "$SYNC_BRANCH" --base lingxifox --title "$PR_TITLE" --body-file "$BODY_FILE"
+          fi
+
   cleanup-failed-candidate:
     name: Cleanup Failed Sync Candidate
     needs: [prepare-sync, verify-candidate]
-    if: always() && needs.prepare-sync.outputs.sync_needed == 'true' && needs.verify-candidate.result != 'success'
+    if: >-
+      always() &&
+      needs.prepare-sync.outputs.sync_needed == 'true' &&
+      needs.prepare-sync.outputs.manual_review_required != 'true' &&
+      needs.verify-candidate.result != 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -261,4 +367,3 @@ jobs:
       target_sha: ${{ needs.prepare-sync.outputs.candidate_sha }}
       force_publish: false
       caller_verified: true
-    secrets: inherit
