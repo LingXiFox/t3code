@@ -50,7 +50,7 @@ export function MetricsStatusBar({ hidden = false }: { readonly hidden?: boolean
   const { context, cache, runtime } = threadMetrics;
   const runDotClass =
     runtime.runStatus === "running" || runtime.runStatus === "compacting"
-      ? "bg-primary animate-pulse motion-reduce:animate-none"
+      ? "bg-primary live-run-pulse motion-reduce:animate-none"
       : runtime.runStatus === "error"
         ? "bg-error"
         : "bg-primary/70";
