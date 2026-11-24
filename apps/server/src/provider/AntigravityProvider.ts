@@ -45,7 +45,6 @@ import { resolveUsageLimitsAfterProbe } from "@t3tools/provider-core/server/usag
 import {
   antigravityModelOptionDescriptors,
   antigravityThinkingConfig,
-  isAntigravityOrchestratorModel,
 } from "./acp/AntigravityAcpSupport.ts";
 
 const EMPTY_MODEL_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });
@@ -111,11 +110,8 @@ export function buildAntigravityModelsFromSession(
     const capabilities =
       entry.value === currentValue && currentDescriptors.length > 0
         ? createModelCapabilities({ optionDescriptors: currentDescriptors })
-        : observed === undefined
-          ? isAntigravityOrchestratorModel(entry.value)
-            ? EMPTY_MODEL_CAPABILITIES
-            : thinkingCapabilities(currentThinking, false)
-          : thinkingCapabilities(observed, true);
+        : // Levels differ per model; an unobserved model reports none so the registry keeps its cached ones.
+          thinkingCapabilities(observed);
     return [
       {
         slug: entry.value,
