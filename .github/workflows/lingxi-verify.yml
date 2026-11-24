@@ -15,6 +15,11 @@ on:
         required: false
         type: string
         default: lingxifox
+      run_macos_smoke:
+        description: Run macOS unsigned build smoke check
+        required: false
+        type: boolean
+        default: true
 
 concurrency:
   group: lingxi-verify-${{ github.workflow }}-${{ inputs.ref || github.ref }}
@@ -86,7 +91,7 @@ jobs:
     name: macOS Build Smoke (Unsigned)
     runs-on: macos-26
     timeout-minutes: 30
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
+    if: github.event_name == 'workflow_dispatch' || inputs.run_macos_smoke == true
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6

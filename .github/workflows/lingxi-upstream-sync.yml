@@ -23,6 +23,7 @@ concurrency:
 permissions:
   contents: write
   pull-requests: write
+  issues: write
   actions: read
   statuses: write
 
@@ -275,6 +276,7 @@ jobs:
     uses: ./.github/workflows/lingxi-verify.yml
     with:
       ref: ${{ needs.prepare-sync.outputs.candidate_sha }}
+      run_macos_smoke: true
 
   record-candidate-status:
     name: Record Candidate CI Status

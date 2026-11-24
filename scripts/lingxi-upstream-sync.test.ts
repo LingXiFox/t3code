@@ -500,10 +500,15 @@ describe("lingxi-upstream-sync", () => {
         const syncDoc = yield* Schema.decodeEffect(fromYaml(WorkflowSchema))(syncYaml);
         const applyDoc = yield* Schema.decodeEffect(fromYaml(WorkflowSchema))(applyYaml);
         yield* Schema.decodeEffect(fromYaml(WorkflowSchema))(nightlyYaml);
-        yield* Schema.decodeEffect(fromYaml(WorkflowSchema))(verifyYaml);
+        const verifyDoc = yield* Schema.decodeEffect(fromYaml(WorkflowSchema))(verifyYaml);
 
         assert.include(syncDoc.jobs["verify-candidate"]?.if ?? "", "verify_needed == 'true'");
         assert.notInclude(syncDoc.jobs["verify-candidate"]?.if ?? "", "manual_review_required");
+        assert.include(syncYaml, "run_macos_smoke: true");
+        assert.include(syncYaml, "statuses: write");
+        assert.include(syncYaml, "pull-requests: write");
+        assert.include(syncYaml, "issues: write");
+        assert.include(syncYaml, "contents: write");
         assert.isDefined(syncDoc.jobs["record-candidate-status"]);
         assert.include(
           syncDoc.jobs["cleanup-failed-candidate"]?.if ?? "",
@@ -519,6 +524,17 @@ describe("lingxi-upstream-sync", () => {
         );
         assert.notInclude(applyYaml, "pull_request_review");
         assert.include(applyYaml, "--force-with-lease");
+        assert.include(applyYaml, "'lingxi-upstream-sync'");
+        assert.include(applyYaml, "lingxi-upstream-sync-apply-noop-");
+
+        assert.include(
+          verifyDoc.jobs["verify-macos-smoke"]?.if ?? "",
+          "inputs.run_macos_smoke == true",
+        );
+        assert.notInclude(
+          verifyDoc.jobs["verify-macos-smoke"]?.if ?? "",
+          "github.event_name == 'workflow_call'",
+        );
 
         assert.include(nightlyYaml, "lingxi-upstream-sync-apply.yml@refs/heads/lingxifox");
         assert.include(verifyYaml, "scripts/lingxi-upstream-sync.test.ts");
