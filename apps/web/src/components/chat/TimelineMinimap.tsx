@@ -195,14 +195,13 @@ export function TimelineMinimap({
               const activeDistance =
                 resolvedActiveIndex === null ? null : Math.abs(index - resolvedActiveIndex);
               return (
-                // Compositor-friendly on purpose: in-view state and the hover
-                // fisheye animate constantly (every scroll tick and streaming
-                // update flips a band of strips), so the strip animates only
-                // transform and opacity.
+                // Compositor-friendly on purpose: in-view state and the hover fisheye change
+                // constantly, so the strip animates only transform and opacity. The fade stays on
+                // hover/focus, where a transition per in-view flip would re-run style recalc.
                 <span
                   aria-hidden="true"
                   className={cn(
-                    "pointer-events-none absolute left-0 h-0.5 w-6 origin-left -translate-y-1/2 rounded-full transition-transform duration-150 after:absolute after:inset-0 after:rounded-full after:bg-foreground/55 after:opacity-0 after:transition-opacity after:duration-150 data-[in-view=true]:after:opacity-100",
+                    "pointer-events-none absolute left-0 h-0.5 w-6 origin-left -translate-y-1/2 rounded-full transition-transform duration-150 after:absolute after:inset-0 after:rounded-full after:bg-foreground/55 after:opacity-0 data-[in-view=true]:after:opacity-100 group-hover/minimap:after:transition-opacity group-hover/minimap:after:duration-150 group-focus-within/minimap:after:transition-opacity group-focus-within/minimap:after:duration-150",
                     activeDistance === 0 ? "bg-muted-foreground/60" : "bg-muted-foreground/25",
                     activeDistance === 0
                       ? "scale-x-100"
